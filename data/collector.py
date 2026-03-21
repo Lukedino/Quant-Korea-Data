@@ -41,6 +41,14 @@ except ImportError:
     OpenDartReader = None
     logger.warning("[Collector] OpenDartReader 미설치 — DART 수집 불가")
 
+# ── yfinance 임포트 (선택적) ──────────────────────────────────────────────────
+try:
+    import yfinance as yf
+    logger.debug("[Collector] yfinance 로드 완료")
+except ImportError:
+    yf = None
+    logger.warning("[Collector] yfinance 미설치 — 일별 주가 수집 불가")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # [0] 유틸리티
@@ -238,46 +246,93 @@ def get_daily_prices_month(yyyymm: str) -> pd.DataFrame:
     """
     특정 월의 전체 일별 OHLCV 수집 (전종목).
 
-    ⚠️  GitHub Actions (Azure IP) 전용.
-        Colab (GCP IP) 에서는 KRX가 이 엔드포인트를 차단함.
+    yfinance (Yahoo Finance) 사용 — KRX 전종목시세 엔드포인트 차단 우회.
+    종목 목록은 pykrx get_market_ticker_list로 조회.
 
     Returns DataFrame: date, ticker, open, high, low, close, volume
     """
+    if yf is None:
+        raise ImportError("yfinance를 설치하세요: pip install yfinance")
     if krx is None:
         raise ImportError("pykrx를 설치하세요: pip install pykrx")
 
     year  = int(yyyymm[:4])
     month = int(yyyymm[4:6])
-    start = f"{year:04d}{month:02d}01"
-    # 해당 월 마지막 날 계산
+    start = f"{year:04d}-{month:02d}-01"
     if month == 12:
         end_dt = datetime(year + 1, 1, 1) - timedelta(days=1)
     else:
         end_dt = datetime(year, month + 1, 1) - timedelta(days=1)
-    end = end_dt.strftime("%Y%m%d")
+    end   = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")  # yfinance end 는 exclusive
 
-    logger.info(f"[Collector] 일별 주가 수집: {yyyymm} ({start}~{end})")
+    logger.info(f"[Collector] 일별 주가 수집 (yfinance): {yyyymm} ({start}~{end_dt.strftime('%Y-%m-%d')})")
 
-    # 거래일 목록 (KODEX200 기준)
-    trading_days = _get_trading_days(start, end)
-    if not trading_days:
-        logger.warning(f"[Collector] {yyyymm} 거래일 없음")
+    # 종목 목록 (KRX ticker → Yahoo suffix)
+    ticker_map: dict[str, str] = {}  # "005930.KS" → "005930"
+    suffix_map = {"KOSPI": ".KS", "KOSDAQ": ".KQ"}
+    ref_date = f"{year:04d}{month:02d}01"
+    for market in config.MARKETS:
+        try:
+            tlist = krx.get_market_ticker_list(ref_date, market=market)
+            sfx = suffix_map.get(market, ".KS")
+            for t in tlist:
+                ticker_map[f"{t}{sfx}"] = t
+            time.sleep(random.uniform(*config.DELAY_API))
+        except Exception as e:
+            logger.error(f"[Collector] {market} 종목 목록 조회 실패: {e}")
+
+    if not ticker_map:
+        logger.warning(f"[Collector] {yyyymm} 종목 목록 없음")
         return pd.DataFrame()
 
-    logger.info(f"[Collector] 거래일: {len(trading_days)}일")
+    yf_tickers = list(ticker_map.keys())
+    logger.info(f"[Collector] {yyyymm} 종목 수: {len(yf_tickers)}")
 
-    try:
-        from tqdm import tqdm
-        days_iter = tqdm(trading_days, desc=f"{yyyymm} 일별 주가")
-    except ImportError:
-        days_iter = trading_days
+    # yfinance 배치 다운로드 (500종목씩)
+    BATCH = 500
+    all_rows: list[pd.DataFrame] = []
 
-    all_rows = []
-    for day in days_iter:
-        df = _get_ohlcv_by_ticker_day(day)
-        if df is not None and not df.empty:
-            all_rows.append(df)
-        time.sleep(random.uniform(*config.DELAY_DAILY))
+    for i in range(0, len(yf_tickers), BATCH):
+        batch = yf_tickers[i : i + BATCH]
+        batch_no = i // BATCH + 1
+        total_batches = (len(yf_tickers) + BATCH - 1) // BATCH
+        logger.info(f"[Collector] {yyyymm} 배치 {batch_no}/{total_batches} ({len(batch)}종목)")
+        try:
+            raw = yf.download(
+                batch, start=start, end=end,
+                auto_adjust=True, progress=False,
+                group_by="ticker", threads=True,
+            )
+            if raw is None or raw.empty:
+                logger.warning(f"[Collector] {yyyymm} 배치 {batch_no} 빈 응답")
+                continue
+
+            for yf_t in batch:
+                krx_t = ticker_map[yf_t]
+                try:
+                    df_t = raw[yf_t].copy() if len(batch) > 1 else raw.copy()
+                    df_t = df_t.dropna(subset=["Close"])
+                    if df_t.empty:
+                        continue
+                    df_t = df_t.reset_index()
+                    df_t = df_t.rename(columns={
+                        "Date": "date", "Open": "open", "High": "high",
+                        "Low": "low", "Close": "close", "Volume": "volume",
+                    })
+                    df_t["date"] = pd.to_datetime(df_t["date"]).dt.strftime("%Y%m%d")
+                    df_t["ticker"] = krx_t
+                    keep = ["date", "ticker", "open", "high", "low", "close", "volume"]
+                    df_t = df_t[[c for c in keep if c in df_t.columns]]
+                    df_t = df_t[df_t["close"] > 0]
+                    if not df_t.empty:
+                        all_rows.append(df_t)
+                except Exception as e:
+                    logger.debug(f"[Collector] {yf_t} 처리 실패: {e}")
+
+        except Exception as e:
+            logger.warning(f"[Collector] {yyyymm} 배치 {batch_no} 다운로드 실패: {e}")
+
+        time.sleep(1.0)  # Yahoo Finance 레이트 리밋
 
     if not all_rows:
         logger.warning(f"[Collector] {yyyymm} 일별 주가 수집 결과 없음")
@@ -298,35 +353,6 @@ def _get_trading_days(start: str, end: str) -> list[str]:
     except Exception as e:
         logger.error(f"[Collector] 거래일 조회 실패: {e}")
         return []
-
-
-def _get_ohlcv_by_ticker_day(date: str) -> Optional[pd.DataFrame]:
-    """단일 거래일 전종목 OHLCV. 실패 시 None 반환."""
-    try:
-        df = krx.get_market_ohlcv_by_ticker(date)
-        if df is None or df.empty:
-            return None
-
-        df = df.reset_index()
-        # 컬럼명 정규화 (pykrx 버전마다 다를 수 있음)
-        col0 = df.columns[0]
-        if col0 != "ticker":
-            df = df.rename(columns={col0: "ticker"})
-
-        rename = {"시가": "open", "고가": "high", "저가": "low",
-                  "종가": "close", "거래량": "volume"}
-        df = df.rename(columns=rename)
-
-        keep = ["ticker", "open", "high", "low", "close", "volume"]
-        df = df[[c for c in keep if c in df.columns]].copy()
-        df = df[df["close"] > 0]  # 거래정지 제외
-        df["date"] = date
-
-        return df[["date", "ticker"] + [c for c in df.columns if c not in ("date", "ticker")]]
-
-    except Exception as e:
-        logger.debug(f"[Collector] {date} OHLCV 수집 실패: {e}")
-        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
