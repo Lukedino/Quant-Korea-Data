@@ -119,9 +119,10 @@ def get_universe(date: str = None) -> list[str]:
     for market in config.MARKETS:
         try:
             listing = fdr.StockListing(market)
-            t = listing["Symbol"].dropna().astype(str).tolist()
+            code_col = "Symbol" if "Symbol" in listing.columns else "Code"
+            t = listing[code_col].dropna().astype(str).tolist()
             tickers.extend(t)
-            logger.info(f"[Collector] {market} 유니버스: {len(t)}종목 (FDR)")
+            logger.info(f"[Collector] {market} 유니버스: {len(t)}종목 (FDR, col={code_col})")
         except Exception as e:
             logger.error(f"[Collector] {market} 종목 목록 조회 실패: {e}")
 
@@ -242,8 +243,9 @@ def get_daily_prices_month(yyyymm: str) -> pd.DataFrame:
     for market in config.MARKETS:
         try:
             listing = fdr.StockListing(market)
+            code_col = "Symbol" if "Symbol" in listing.columns else "Code"
             sfx = suffix_map.get(market, ".KS")
-            for ticker in listing["Symbol"].dropna().astype(str):
+            for ticker in listing[code_col].dropna().astype(str):
                 ticker_map[f"{ticker}{sfx}"] = ticker
             logger.info(f"[Collector] {market} 종목 수: {len(listing)}")
         except Exception as e:
