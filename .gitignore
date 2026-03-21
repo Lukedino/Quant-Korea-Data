@@ -1,0 +1,31 @@
+# ── 크리덴셜 — 절대 커밋 금지 ────────────────────────────────
+gdrive_creds.json
+service-account.json
+*.json.key
+.env
+.env.*
+
+# ── 수집 데이터 — Drive에만 저장 ─────────────────────────────
+data/local/
+output/
+
+# ── 로그 ─────────────────────────────────────────────────────
+*.log
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.python-version
+*.egg-info/
+dist/
+build/
+
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

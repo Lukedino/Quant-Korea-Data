@@ -1,0 +1,246 @@
+"""
+data/drive_uploader.py — Google Drive Service Account 기반 업로드/다운로드
+
+인증 방식: Service Account JSON (GOOGLE_APPLICATION_CREDENTIALS 환경변수)
+대상 폴더: GDRIVE_FOLDER_ID 환경변수 (루트 폴더)
+
+폴더 구조 (루트 폴더 하위):
+  data/market/      ← YYYYMM.parquet
+  data/financials/  ← YYYY.parquet
+  data/prices/      ← YYYYMM.parquet
+  data/progress/    ← collection_status.json
+"""
+
+import logging
+import os
+from pathlib import Path
+from typing import Optional
+
+import config
+
+logger = logging.getLogger(__name__)
+
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+MIME_PARQUET = "application/octet-stream"
+MIME_JSON    = "application/json"
+MIME_FOLDER  = "application/vnd.google-apps.folder"
+
+
+class DriveUploader:
+    """Google Drive 업로드/다운로드 클라이언트."""
+
+    def __init__(self):
+        self._service = None
+        self._folder_cache: dict[str, str] = {}  # path → folder_id 캐시
+
+    def _get_service(self):
+        if self._service is not None:
+            return self._service
+
+        creds_path = config.GDRIVE_CREDS_PATH
+        if not Path(creds_path).exists():
+            raise FileNotFoundError(
+                f"Google 자격증명 파일이 없습니다: {creds_path}\n"
+                "GitHub Secrets의 GDRIVE_CREDENTIALS를 등록하고 워크플로우에서 디코딩하세요."
+            )
+
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+
+        creds = service_account.Credentials.from_service_account_file(
+            creds_path, scopes=SCOPES
+        )
+        self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        return self._service
+
+    # ── 폴더 탐색 & 생성 ───────────────────────────────────────────────────────
+
+    def _get_or_create_folder(self, path: str, parent_id: Optional[str] = None) -> str:
+        """
+        중첩 경로(예: "data/market")를 루트 폴더 하위에 자동 생성.
+        존재하면 ID 반환, 없으면 생성 후 ID 반환.
+        """
+        if parent_id is None:
+            parent_id = config.GDRIVE_FOLDER_ID
+
+        cache_key = f"{parent_id}/{path}"
+        if cache_key in self._folder_cache:
+            return self._folder_cache[cache_key]
+
+        service = self._get_service()
+        parts = [p for p in path.split("/") if p]
+        current_parent = parent_id
+
+        for part in parts:
+            # 이미 있는지 검색
+            resp = service.files().list(
+                q=(f"name='{part}' and mimeType='{MIME_FOLDER}' "
+                   f"and '{current_parent}' in parents and trashed=false"),
+                fields="files(id, name)",
+                spaces="drive",
+            ).execute()
+            files = resp.get("files", [])
+
+            if files:
+                current_parent = files[0]["id"]
+            else:
+                # 없으면 생성
+                folder = service.files().create(
+                    body={"name": part, "mimeType": MIME_FOLDER,
+                          "parents": [current_parent]},
+                    fields="id",
+                ).execute()
+                current_parent = folder["id"]
+                logger.debug(f"[Drive] 폴더 생성: {part} (id={current_parent})")
+
+        self._folder_cache[cache_key] = current_parent
+        return current_parent
+
+    def _find_file(self, folder_id: str, filename: str) -> Optional[str]:
+        """폴더 내 파일 ID 검색. 없으면 None."""
+        service = self._get_service()
+        resp = service.files().list(
+            q=(f"name='{filename}' and '{folder_id}' in parents and trashed=false"),
+            fields="files(id, name)",
+            spaces="drive",
+        ).execute()
+        files = resp.get("files", [])
+        return files[0]["id"] if files else None
+
+    # ── 업로드 ─────────────────────────────────────────────────────────────────
+
+    def upload(self, local_path: str, remote_subfolder: str) -> str:
+        """
+        로컬 파일을 Drive의 remote_subfolder에 업로드.
+        기존 파일 있으면 update, 없으면 create.
+        대용량 파일 안전을 위해 resumable=True 사용.
+
+        Returns: 업로드된 파일의 Drive file ID
+        """
+        from googleapiclient.http import MediaFileUpload
+
+        local = Path(local_path)
+        if not local.exists():
+            raise FileNotFoundError(f"업로드할 파일 없음: {local_path}")
+
+        service    = self._get_service()
+        folder_id  = self._get_or_create_folder(remote_subfolder)
+        filename   = local.name
+        mime       = MIME_JSON if filename.endswith(".json") else MIME_PARQUET
+        media      = MediaFileUpload(str(local), mimetype=mime, resumable=True)
+        existing_id = self._find_file(folder_id, filename)
+
+        if existing_id:
+            file = service.files().update(
+                fileId=existing_id,
+                media_body=media,
+                fields="id",
+            ).execute()
+            logger.info(f"[Drive] 업데이트: {remote_subfolder}/{filename}")
+        else:
+            file = service.files().create(
+                body={"name": filename, "parents": [folder_id]},
+                media_body=media,
+                fields="id",
+            ).execute()
+            logger.info(f"[Drive] 업로드: {remote_subfolder}/{filename}")
+
+        return file["id"]
+
+    def upload_directory(self, local_dir: str, remote_subfolder: str,
+                         extensions: tuple = (".parquet", ".json")):
+        """
+        로컬 디렉터리 내 파일 전체 업로드.
+        extensions에 해당하는 확장자만 업로드.
+        """
+        local = Path(local_dir)
+        if not local.exists():
+            logger.warning(f"[Drive] 디렉터리 없음: {local_dir}")
+            return
+
+        files = [f for f in local.iterdir()
+                 if f.is_file() and f.suffix in extensions]
+        logger.info(f"[Drive] 디렉터리 업로드: {len(files)}개 파일 → {remote_subfolder}")
+
+        for f in sorted(files):
+            try:
+                self.upload(str(f), remote_subfolder)
+            except Exception as e:
+                logger.error(f"[Drive] {f.name} 업로드 실패: {e}")
+
+    # ── 다운로드 ───────────────────────────────────────────────────────────────
+
+    def download(self, remote_subfolder: str, filename: str, local_path: str):
+        """
+        Drive에서 파일 다운로드.
+        remote_subfolder: 예) "data/progress"
+        filename:         예) "collection_status.json"
+        local_path:       로컬 저장 경로
+        """
+        import io
+        from googleapiclient.http import MediaIoBaseDownload
+
+        service   = self._get_service()
+        folder_id = self._get_or_create_folder(remote_subfolder)
+        file_id   = self._find_file(folder_id, filename)
+
+        if file_id is None:
+            raise FileNotFoundError(
+                f"Drive에 파일 없음: {remote_subfolder}/{filename}"
+            )
+
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+
+        request = service.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        with open(local_path, "wb") as f:
+            f.write(buf.getvalue())
+
+        logger.info(f"[Drive] 다운로드 완료: {remote_subfolder}/{filename} → {local_path}")
+
+    def download_all(self, remote_subfolder: str, local_dir: str,
+                     extensions: tuple = (".parquet", ".json")):
+        """Drive 서브폴더의 모든 파일을 로컬로 다운로드."""
+        service   = self._get_service()
+        folder_id = self._get_or_create_folder(remote_subfolder)
+
+        resp = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="files(id, name)",
+            spaces="drive",
+        ).execute()
+        files = resp.get("files", [])
+
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        for f in files:
+            if any(f["name"].endswith(ext) for ext in extensions):
+                try:
+                    self.download(
+                        remote_subfolder=remote_subfolder,
+                        filename=f["name"],
+                        local_path=str(Path(local_dir) / f["name"]),
+                    )
+                except Exception as e:
+                    logger.error(f"[Drive] {f['name']} 다운로드 실패: {e}")
+
+    # ── 전체 업로드 (수집 완료 후 일괄) ──────────────────────────────────────
+
+    def sync_all_local(self):
+        """
+        data/local/ 하위 모든 Parquet/JSON 파일을 Drive에 동기화.
+        bootstrap 완료 후 일괄 업로드 시 사용.
+        """
+        local_root = Path(config.LOCAL_DATA_DIR)
+
+        for dtype, remote_path in config.DRIVE_PATHS.items():
+            local_subdir = local_root / dtype
+            if local_subdir.exists():
+                self.upload_directory(str(local_subdir), remote_path)
+
+        logger.info("[Drive] 전체 동기화 완료")
