@@ -1,24 +1,24 @@
-name: Bootstrap 1Y (2025년)
+name: "Bootstrap 1Y — 최근 1년 (작년)"
 
 on:
   workflow_dispatch:
     inputs:
       skip_prices:
-        description: '일별 주가 수집 생략 (true/false)'
-        required: false
-        default: 'false'
+        description: '일별 주가 수집 생략'
+        type: boolean
+        default: false
       skip_financials:
-        description: '재무제표 수집 생략 (true/false)'
-        required: false
-        default: 'false'
+        description: '재무제표 수집 생략'
+        type: boolean
+        default: false
       force:
-        description: '완료된 월도 재수집 (true/false)'
-        required: false
-        default: 'false'
+        description: '완료된 월도 재수집'
+        type: boolean
+        default: false
       dry_run:
-        description: '테스트 실행 - 저장 없음 (true/false)'
-        required: false
-        default: 'false'
+        description: '테스트 실행 (저장 없음)'
+        type: boolean
+        default: false
 
 jobs:
   bootstrap:
@@ -26,11 +26,9 @@ jobs:
     timeout-minutes: 55
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -43,25 +41,25 @@ jobs:
           echo "${{ secrets.GDRIVE_CREDENTIALS }}" | base64 -d > gdrive_creds.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
 
-      - name: Run bootstrap (1년 전 = 2025년)
+      - name: Bootstrap (최근 1년)
         env:
-          DART_API_KEY:    ${{ secrets.DART_API_KEY }}
+          DART_API_KEY:     ${{ secrets.DART_API_KEY }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           ARGS="--mode bootstrap --years-ago 1 --upload-drive"
-          [ "${{ inputs.skip_prices }}"    = "true" ] && ARGS="$ARGS --skip-prices"
-          [ "${{ inputs.skip_financials }}" = "true" ] && ARGS="$ARGS --skip-financials"
-          [ "${{ inputs.force }}"           = "true" ] && ARGS="$ARGS --force"
-          [ "${{ inputs.dry_run }}"         = "true" ] && ARGS="$ARGS --dry-run"
+          ${{ inputs.skip_prices }}    && ARGS="$ARGS --skip-prices"
+          ${{ inputs.skip_financials }} && ARGS="$ARGS --skip-financials"
+          ${{ inputs.force }}           && ARGS="$ARGS --force"
+          ${{ inputs.dry_run }}         && ARGS="$ARGS --dry-run"
           python main.py $ARGS
 
-      - name: Upload collection log
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: collection-log-1y-${{ github.run_id }}
+          name: log-1y-${{ github.run_id }}
           path: collection.log
 
-      - name: Clean up credentials
+      - name: Cleanup credentials
         if: always()
         run: rm -f gdrive_creds.json

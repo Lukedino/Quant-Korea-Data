@@ -105,52 +105,83 @@ def run_daily(args):
 def run_bootstrap(args):
     """
     과거 데이터 일괄 수집.
-    --years-ago N → 현재년도 - N 연도 수집
-    --year Y      → 직접 연도 지정 (--years-ago 보다 우선)
+
+    단일 연도:
+      --years-ago N  → 현재년도 - N 연도 1개
+      --year YYYY    → 직접 연도 지정
+
+    범위 수집:
+      --years-range N   → 최근 N년치 (current-N ~ current-1)
+      --year-start YYYY → YYYY ~ current-1 전체 (max 모드)
     """
     from data import historical, progress
 
     current_year = datetime.today().year
+    skip = not args.force
 
-    if args.year:
-        target_year = args.year
-    elif args.years_ago:
-        target_year = current_year - args.years_ago
-    else:
-        logger.error("bootstrap 모드에는 --years-ago 또는 --year 가 필요합니다.")
-        sys.exit(1)
+    # ── 범위 수집 (years-range / year-start) ──────────────────────────────
+    if args.year_start or args.years_range:
+        if args.year_start:
+            start_year = args.year_start
+            label = f"{start_year}년~{current_year - 1}년 (최대치)"
+        else:
+            start_year = current_year - args.years_range
+            label = f"{start_year}년~{current_year - 1}년 ({args.years_range}년치)"
 
-    logger.info(
-        f"[Bootstrap] 대상 연도: {target_year} "
-        f"(skip_prices={args.skip_prices}, skip_financials={args.skip_financials}, "
-        f"dry_run={args.dry_run})"
-    )
+        end_year = current_year - 1
 
-    # 시장 스냅샷 + 일별 주가
-    historical.collect_year(
-        year=target_year,
-        skip_if_done=not args.force,
-        skip_prices=args.skip_prices,
-        dry_run=args.dry_run,
-        upload_drive=args.upload_drive,
-    )
+        logger.info(
+            f"[Bootstrap] 범위 수집: {label} | "
+            f"skip_prices={args.skip_prices}, skip_financials={args.skip_financials}, "
+            f"dry_run={args.dry_run}"
+        )
 
-    # 재무제표
-    if not args.skip_financials:
-        historical.collect_financials_year(
-            year=target_year,
-            skip_if_done=not args.force,
+        historical.collect_range(
+            start_year=start_year,
+            end_year=end_year,
+            skip_if_done=skip,
+            skip_prices=args.skip_prices,
+            skip_financials=args.skip_financials,
             dry_run=args.dry_run,
             upload_drive=args.upload_drive,
         )
 
-    # 최종 Drive 전체 업로드 (--upload-drive + 개별 업로드 안 된 파일 보완)
+    # ── 단일 연도 수집 (years-ago / year) ─────────────────────────────────
+    elif args.year or args.years_ago:
+        target_year = args.year if args.year else current_year - args.years_ago
+
+        logger.info(
+            f"[Bootstrap] 단일 연도: {target_year}년 | "
+            f"skip_prices={args.skip_prices}, skip_financials={args.skip_financials}, "
+            f"dry_run={args.dry_run}"
+        )
+
+        historical.collect_year(
+            year=target_year,
+            skip_if_done=skip,
+            skip_prices=args.skip_prices,
+            dry_run=args.dry_run,
+            upload_drive=args.upload_drive,
+        )
+        if not args.skip_financials:
+            historical.collect_financials_year(
+                year=target_year,
+                skip_if_done=skip,
+                dry_run=args.dry_run,
+                upload_drive=args.upload_drive,
+            )
+
+    else:
+        logger.error("bootstrap 모드에는 --years-ago / --year / --years-range / --year-start 중 하나가 필요합니다.")
+        sys.exit(1)
+
+    # 최종 Drive 전체 업로드
     if args.upload_drive and not args.dry_run:
         _upload_all()
 
     progress.print_summary()
     storage.print_local_summary()
-    logger.info(f"[Bootstrap] {target_year}년 수집 완료")
+    logger.info("[Bootstrap] 완료")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -192,11 +223,19 @@ def main():
     # bootstrap 전용
     parser.add_argument(
         "--years-ago", type=int, metavar="N",
-        help="bootstrap: 현재 기준 N년 전 연도 수집 (예: 1 → 2025년)",
+        help="bootstrap: 현재 기준 N년 전 단일 연도 수집 (예: 1 → 2025년)",
     )
     parser.add_argument(
         "--year", type=int, metavar="YYYY",
-        help="bootstrap: 직접 연도 지정 (--years-ago보다 우선)",
+        help="bootstrap: 직접 단일 연도 지정",
+    )
+    parser.add_argument(
+        "--years-range", type=int, metavar="N",
+        help="bootstrap: 최근 N년치 범위 수집 (예: 3 → 2023~2025년)",
+    )
+    parser.add_argument(
+        "--year-start", type=int, metavar="YYYY",
+        help="bootstrap: YYYY년부터 현재까지 전체 수집 (최대치 모드, 예: 2010)",
     )
 
     # 수집 제어

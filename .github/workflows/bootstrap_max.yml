@@ -1,8 +1,12 @@
-name: "Bootstrap 5Y — 최근 5년치"
+name: "Bootstrap MAX — 2010년부터 전체"
 
 on:
   workflow_dispatch:
     inputs:
+      year_start:
+        description: '수집 시작 연도 (기본: 2010, pykrx 지원 범위)'
+        required: false
+        default: '2010'
       skip_prices:
         description: '일별 주가 수집 생략'
         type: boolean
@@ -24,7 +28,9 @@ jobs:
   bootstrap:
     runs-on: ubuntu-latest
     timeout-minutes: 55
-    # ⚠️ 5년치는 timeout 초과 → 체크포인트 덕분에 재실행 시 이어서 진행
+    # ⚠️ 최대치 수집은 timeout 초과 필연 → 반드시 여러 번 재실행
+    #    체크포인트(collection_status.json)가 Drive에 저장되므로
+    #    재실행 시 완료된 월은 자동 스킵하고 이어서 진행
 
     steps:
       - uses: actions/checkout@v4
@@ -42,12 +48,12 @@ jobs:
           echo "${{ secrets.GDRIVE_CREDENTIALS }}" | base64 -d > gdrive_creds.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
 
-      - name: Bootstrap (최근 5년)
+      - name: Bootstrap (최대치 — ${{ inputs.year_start }}년부터)
         env:
           DART_API_KEY:     ${{ secrets.DART_API_KEY }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
-          ARGS="--mode bootstrap --years-range 5 --upload-drive"
+          ARGS="--mode bootstrap --year-start ${{ inputs.year_start }} --upload-drive"
           ${{ inputs.skip_prices }}    && ARGS="$ARGS --skip-prices"
           ${{ inputs.skip_financials }} && ARGS="$ARGS --skip-financials"
           ${{ inputs.force }}           && ARGS="$ARGS --force"
@@ -58,7 +64,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: log-5y-${{ github.run_id }}
+          name: log-max-${{ github.run_id }}
           path: collection.log
 
       - name: Cleanup credentials

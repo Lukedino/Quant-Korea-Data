@@ -183,13 +183,16 @@ def collect_range(
     """
     연도 범위 일괄 수집. start_year ~ end_year (포함).
 
+    체크포인트 덕분에 중단 후 재실행 시 완료된 월은 자동 스킵.
     수집 순서:
       1. 시장 스냅샷 + 일별 주가 (연도별)
-      2. DART 재무제표 (연도별)
+      2. DART 재무제표 (연도별, skip_financials=False일 때)
     """
-    logger.info(f"[Historical] 범위 수집: {start_year}년 ~ {end_year}년")
+    total = end_year - start_year + 1
+    logger.info(f"[Historical] 범위 수집 시작: {start_year}~{end_year}년 ({total}년치)")
 
-    for year in range(start_year, end_year + 1):
+    for i, year in enumerate(range(start_year, end_year + 1), 1):
+        logger.info(f"[Historical] ── {year}년 ({i}/{total}) ──")
         collect_year(
             year,
             skip_if_done=skip_if_done,
@@ -205,7 +208,7 @@ def collect_range(
                 upload_drive=upload_drive,
             )
 
-    logger.info(f"[Historical] 범위 수집 완료: {start_year}~{end_year}")
+    logger.info(f"[Historical] 범위 수집 완료: {start_year}~{end_year}년")
     progress.print_summary()
     storage.print_local_summary()
 

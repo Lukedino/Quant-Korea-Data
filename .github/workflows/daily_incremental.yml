@@ -1,19 +1,19 @@
-name: Daily Incremental Collection
+name: "Daily Incremental — 증분 수집"
 
 on:
   schedule:
-    # 매일 18:30 KST (UTC 09:30), 월~금
+    # 매일 18:30 KST (UTC 09:30), 월~금 장마감 후
     - cron: '30 9 * * 1-5'
   workflow_dispatch:
     inputs:
       skip_prices:
-        description: '일별 주가 수집 생략 (true/false)'
-        required: false
-        default: 'false'
+        description: '일별 주가 수집 생략'
+        type: boolean
+        default: false
       dry_run:
-        description: '테스트 실행 - 저장 없음 (true/false)'
-        required: false
-        default: 'false'
+        description: '테스트 실행 (저장 없음)'
+        type: boolean
+        default: false
 
 jobs:
   collect:
@@ -21,11 +21,9 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -38,17 +36,17 @@ jobs:
           echo "${{ secrets.GDRIVE_CREDENTIALS }}" | base64 -d > gdrive_creds.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
 
-      - name: Run daily collection
+      - name: Daily incremental collection
         env:
-          DART_API_KEY:    ${{ secrets.DART_API_KEY }}
+          DART_API_KEY:     ${{ secrets.DART_API_KEY }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           ARGS="--mode daily --upload-drive"
-          [ "${{ inputs.skip_prices }}" = "true" ] && ARGS="$ARGS --skip-prices"
-          [ "${{ inputs.dry_run }}"     = "true" ] && ARGS="$ARGS --dry-run"
+          ${{ inputs.skip_prices }} && ARGS="$ARGS --skip-prices"
+          ${{ inputs.dry_run }}     && ARGS="$ARGS --dry-run"
           python main.py $ARGS
 
-      - name: Upload collection log
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -56,6 +54,6 @@ jobs:
           path: collection.log
           retention-days: 7
 
-      - name: Clean up credentials
+      - name: Cleanup credentials
         if: always()
         run: rm -f gdrive_creds.json
