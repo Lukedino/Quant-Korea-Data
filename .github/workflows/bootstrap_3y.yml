@@ -38,8 +38,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Decode Google credentials
+        env:
+          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
         run: |
-          echo "${{ secrets.GDRIVE_CREDENTIALS }}" | tr -d '[:space:]' | base64 -d > gdrive_creds.json
+          python -c "import base64,os; open('gdrive_creds.json','wb').write(base64.b64decode(''.join(os.environ['GDRIVE_CREDENTIALS'].split())))"
           echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
 
       - name: Bootstrap (최근 3년)
