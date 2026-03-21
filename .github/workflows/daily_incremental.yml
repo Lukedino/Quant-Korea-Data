@@ -33,7 +33,7 @@ jobs:
 
       - name: Decode Google credentials
         run: |
-          echo "${{ secrets.GDRIVE_CREDENTIALS }}" | base64 -d > gdrive_creds.json
+          echo "${{ secrets.GDRIVE_CREDENTIALS }}" | tr -d '[:space:]' | base64 -d > gdrive_creds.json
           echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
 
       - name: Daily incremental collection
