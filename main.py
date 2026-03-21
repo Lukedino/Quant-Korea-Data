@@ -26,11 +26,13 @@ from datetime import datetime
 from pathlib import Path
 
 # ── 로깅 설정 ─────────────────────────────────────────────────────────────────
+_stdout_handler = logging.StreamHandler(sys.stdout)
+_stdout_handler.stream.reconfigure(encoding="utf-8", errors="replace")
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     handlers=[
-        logging.StreamHandler(sys.stdout),
+        _stdout_handler,
         logging.FileHandler("collection.log", encoding="utf-8"),
     ],
 )
@@ -141,6 +143,7 @@ def run_bootstrap(args):
             end_year=end_year,
             skip_if_done=skip,
             skip_prices=args.skip_prices,
+            skip_market=args.skip_market,
             skip_financials=args.skip_financials,
             dry_run=args.dry_run,
             upload_drive=args.upload_drive,
@@ -163,6 +166,14 @@ def run_bootstrap(args):
             dry_run=args.dry_run,
             upload_drive=args.upload_drive,
         )
+        if not args.skip_market:
+            historical.collect_market_range(
+                start_year=target_year,
+                end_year=target_year,
+                skip_if_done=skip,
+                dry_run=args.dry_run,
+                upload_drive=args.upload_drive,
+            )
         if not args.skip_financials:
             historical.collect_financials_year(
                 year=target_year,
@@ -194,8 +205,10 @@ def _upload_all():
     if not config.GDRIVE_FOLDER_ID:
         logger.warning("[Upload] GDRIVE_FOLDER_ID 미설정 → 업로드 건너뜀")
         return
-    if not Path(config.GDRIVE_CREDS_PATH).exists():
-        logger.warning(f"[Upload] 자격증명 없음 ({config.GDRIVE_CREDS_PATH}) → 건너뜀")
+    has_token = config.GDRIVE_TOKEN_PATH and Path(config.GDRIVE_TOKEN_PATH).exists()
+    has_sa    = Path(config.GDRIVE_CREDS_PATH).exists()
+    if not has_token and not has_sa:
+        logger.warning("[Upload] Drive 자격증명 없음 → 건너뜀")
         return
 
     try:
@@ -241,7 +254,11 @@ def main():
     # 수집 제어
     parser.add_argument(
         "--skip-prices", action="store_true",
-        help="일별 주가 수집 생략 (시장 스냅샷만 수집)",
+        help="일별 주가 수집 생략",
+    )
+    parser.add_argument(
+        "--skip-market", action="store_true",
+        help="시장 스냅샷(PER/PBR) 수집 생략",
     )
     parser.add_argument(
         "--skip-financials", action="store_true",

@@ -47,16 +47,18 @@ def collect_year(
     upload_drive: bool = False,
 ):
     """
-    특정 연도의 12개월 시장 스냅샷 + 일별 주가 수집.
+    특정 연도의 12개월 일별 주가(yfinance) 수집.
+
+    시장 스냅샷(PER/PBR)은 collect_market_range()로 일괄 수집.
 
     Args:
         year:         수집 연도
-        skip_if_done: True면 이미 완료된 월 건너뜀
-        skip_prices:  True면 일별 OHLCV 수집 생략
-        dry_run:      True면 실제 저장 없이 플로우만 확인
-        upload_drive: True면 각 월 완료 후 Drive 업로드
+        skip_if_done: 이미 완료된 월 건너뜀
+        skip_prices:  일별 OHLCV 수집 생략
+        dry_run:      실제 저장 없이 플로우만 확인
+        upload_drive: 각 월 완료 후 Drive 업로드
     """
-    logger.info(f"[Historical] ===== {year}년 수집 시작 =====")
+    logger.info(f"[Historical] ===== {year}년 가격 수집 시작 =====")
 
     for month in range(1, 13):
         ym = _yyyymm(year, month)
@@ -66,27 +68,6 @@ def collect_year(
         if end_date > datetime.today().strftime("%Y%m%d"):
             logger.info(f"[Historical] {ym} 미래 날짜 → 스킵")
             continue
-
-        # ── 시장 스냅샷 ────────────────────────────────────────────────────
-        if skip_if_done and progress.is_done("market", ym):
-            logger.debug(f"[Historical] market/{ym} 이미 완료 → 스킵")
-        else:
-            progress.mark_in_progress("market", ym)
-            logger.info(f"[Historical] [{ym}] 시장 스냅샷 수집 중... (기준일: {end_date})")
-
-            if not dry_run:
-                df = collector.get_market_snapshot(end_date)
-                if not df.empty:
-                    storage.save_market(df, ym)
-                    progress.mark_done("market", ym)
-
-                    if upload_drive:
-                        _upload_file("market", ym)
-                else:
-                    logger.warning(f"[Historical] {ym} 시장 스냅샷 수집 실패")
-            else:
-                logger.info(f"[DryRun] market/{ym} 수집 시뮬레이션")
-                progress.mark_done("market", ym)
 
         # ── 일별 주가 ──────────────────────────────────────────────────────
         if skip_prices:
@@ -102,7 +83,6 @@ def collect_year(
                 if not df.empty:
                     storage.save_prices(df, ym)
                     progress.mark_done("prices", ym)
-
                     if upload_drive:
                         _upload_file("prices", ym)
                 else:
@@ -111,7 +91,84 @@ def collect_year(
                 logger.info(f"[DryRun] prices/{ym} 수집 시뮬레이션")
                 progress.mark_done("prices", ym)
 
-    logger.info(f"[Historical] ===== {year}년 수집 완료 =====")
+    logger.info(f"[Historical] ===== {year}년 가격 수집 완료 =====")
+
+
+def collect_market_range(
+    start_year: int,
+    end_year: int,
+    skip_if_done: bool = True,
+    dry_run: bool = False,
+    upload_drive: bool = False,
+):
+    """
+    전체 기간 시장 스냅샷(PER/PBR/EPS/BPS/DIV) 일괄 수집.
+
+    pykrx 개별종목 API(get_market_fundamental)를 사용해 전종목 × 1회 호출.
+    GitHub Actions Azure IP에서 차단 없음 — 약 10분 소요.
+
+    수집 후 월별 말일 기준으로 market/YYYYMM.parquet 저장.
+    """
+    today_str = datetime.today().strftime("%Y%m%d")
+
+    # 이미 완료된 월 확인
+    months_needed = [
+        (y, m)
+        for y in range(start_year, end_year + 1)
+        for m in range(1, 13)
+        if _month_end_date(y, m) <= today_str
+        and not (skip_if_done and progress.is_done("market", _yyyymm(y, m)))
+    ]
+
+    if not months_needed:
+        logger.info("[Historical] market 모두 완료 → 스킵")
+        return
+
+    if dry_run:
+        for y, m in months_needed:
+            ym = _yyyymm(y, m)
+            logger.info(f"[DryRun] market/{ym} 수집 시뮬레이션")
+            progress.mark_done("market", ym)
+        return
+
+    start_date = f"{start_year}0101"
+    end_date   = f"{end_year}1231"
+    logger.info(
+        f"[Historical] 펀더멘탈 일괄 수집: {start_date}~{end_date} "
+        f"({len(months_needed)}개월 저장 예정)"
+    )
+
+    fund_df = collector.get_fundamentals_range(start_date, end_date)
+    if fund_df.empty:
+        logger.warning("[Historical] 펀더멘탈 수집 실패 — market 스킵")
+        return
+
+    # 월별 말일 기준으로 재구성하여 저장
+    for y, m in months_needed:
+        ym      = _yyyymm(y, m)
+        eom     = _month_end_date(y, m)          # YYYYMMDD (영업일 기준)
+        ym_str  = f"{y:04d}{m:02d}"              # YYYYMM prefix
+
+        # 해당 월 데이터 중 말일에 가장 가까운 날짜 선택
+        month_df = fund_df[
+            (fund_df["date"] >= f"{ym_str}01") &
+            (fund_df["date"] <= eom)
+        ]
+        if month_df.empty:
+            logger.warning(f"[Historical] market/{ym} 데이터 없음 → 스킵")
+            continue
+
+        last_date = month_df["date"].max()
+        snap = month_df[month_df["date"] == last_date].copy()
+        snap["date"] = ym  # 월키로 통일
+
+        storage.save_market(snap, ym)
+        progress.mark_done("market", ym)
+        if upload_drive:
+            _upload_file("market", ym)
+        logger.debug(f"[Historical] market/{ym} 저장 완료 ({len(snap)}종목)")
+
+    logger.info(f"[Historical] 펀더멘탈 저장 완료: {len(months_needed)}개월")
 
 
 def collect_financials_year(
@@ -177,30 +234,50 @@ def collect_range(
     skip_if_done: bool = True,
     skip_prices: bool = False,
     skip_financials: bool = False,
+    skip_market: bool = False,
     dry_run: bool = False,
     upload_drive: bool = False,
 ):
     """
     연도 범위 일괄 수집. start_year ~ end_year (포함).
 
-    체크포인트 덕분에 중단 후 재실행 시 완료된 월은 자동 스킵.
     수집 순서:
-      1. 시장 스냅샷 + 일별 주가 (연도별)
-      2. DART 재무제표 (연도별, skip_financials=False일 때)
+      Phase 1. 일별 주가  (yfinance, 월별)
+      Phase 2. 시장 스냅샷 PER/PBR (pykrx 개별 API, 전기간 1회)
+      Phase 3. DART 재무제표 (연도별)
     """
     total = end_year - start_year + 1
     logger.info(f"[Historical] 범위 수집 시작: {start_year}~{end_year}년 ({total}년치)")
 
-    for i, year in enumerate(range(start_year, end_year + 1), 1):
-        logger.info(f"[Historical] ── {year}년 ({i}/{total}) ──")
-        collect_year(
-            year,
+    # Phase 1: 일별 주가
+    if not skip_prices:
+        logger.info(f"[Historical] Phase 1: 일별 주가 수집 ({start_year}~{end_year})")
+        for i, year in enumerate(range(start_year, end_year + 1), 1):
+            logger.info(f"[Historical] ── {year}년 가격 ({i}/{total}) ──")
+            collect_year(
+                year,
+                skip_if_done=skip_if_done,
+                skip_prices=False,
+                dry_run=dry_run,
+                upload_drive=upload_drive,
+            )
+
+    # Phase 2: 시장 스냅샷 (PER/PBR) — pykrx 개별 API 일괄
+    if not skip_market:
+        logger.info(f"[Historical] Phase 2: 시장 스냅샷(펀더멘탈) 수집 ({start_year}~{end_year})")
+        collect_market_range(
+            start_year=start_year,
+            end_year=end_year,
             skip_if_done=skip_if_done,
-            skip_prices=skip_prices,
             dry_run=dry_run,
             upload_drive=upload_drive,
         )
-        if not skip_financials:
+
+    # Phase 3: DART 재무제표
+    if not skip_financials:
+        logger.info(f"[Historical] Phase 3: DART 재무제표 수집 ({start_year}~{end_year})")
+        for i, year in enumerate(range(start_year, end_year + 1), 1):
+            logger.info(f"[Historical] ── {year}년 재무제표 ({i}/{total}) ──")
             collect_financials_year(
                 year,
                 skip_if_done=skip_if_done,
@@ -220,7 +297,9 @@ def _upload_file(data_type: str, key: str):
     from pathlib import Path
     import config as cfg
 
-    if not cfg.GDRIVE_FOLDER_ID or not Path(cfg.GDRIVE_CREDS_PATH).exists():
+    has_token = cfg.GDRIVE_TOKEN_PATH and Path(cfg.GDRIVE_TOKEN_PATH).exists()
+    has_sa    = Path(cfg.GDRIVE_CREDS_PATH).exists()
+    if not cfg.GDRIVE_FOLDER_ID or (not has_token and not has_sa):
         logger.debug("[Historical] Drive 자격증명 없음 → 업로드 건너뜀")
         return
 

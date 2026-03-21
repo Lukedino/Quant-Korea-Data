@@ -2,12 +2,14 @@
 data/collector.py — 원자 수집 함수 모음
 
 데이터 소스:
-  - pykrx       : 시장 스냅샷 (PER/PBR/시가총액/종가), 일별 OHLCV
-  - DART OpenAPI: 연간 재무제표 (OpenDartReader)
-  - CompanyGuide: 재무비율 크롤링 (ROE/ROA/EV_EBITDA 등)
+  - FDR (FinanceDataReader): 종목 유니버스 (kind.krx.co.kr, 차단 없음)
+  - yfinance               : 일별 OHLCV (Yahoo Finance)
+  - pykrx                  : 시장 스냅샷 PER/PBR/시가총액 (09:00-15:30 KST 중 작동)
+  - DART OpenAPI           : 연간 재무제표 (OpenDartReader)
+  - CompanyGuide           : 재무비율 크롤링 (ROE/ROA/EV_EBITDA 등)
 
-⚠️  pykrx get_market_ohlcv_by_ticker 는 GitHub Actions(Azure IP)에서만 작동.
-    Colab(GCP IP)에서는 KRX가 차단 → prices 수집은 반드시 Actions에서 실행.
+⚠️  pykrx 전종목시세 엔드포인트는 자동화 스크립트에서 차단될 수 있음.
+    유니버스/일별가격은 FDR+yfinance 사용 (GitHub Actions + 로컬 공통).
 """
 
 import logging
@@ -49,6 +51,14 @@ except ImportError:
     yf = None
     logger.warning("[Collector] yfinance 미설치 — 일별 주가 수집 불가")
 
+# ── FinanceDataReader 임포트 (선택적) ─────────────────────────────────────────
+try:
+    import FinanceDataReader as fdr
+    logger.debug("[Collector] FinanceDataReader 로드 완료")
+except ImportError:
+    fdr = None
+    logger.warning("[Collector] FinanceDataReader 미설치 — 종목 목록 조회 불가")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # [0] 유틸리티
@@ -80,162 +90,121 @@ def _retry(fn, *args, label: str = "", **kwargs):
 
 
 def get_last_business_day(date: Optional[str] = None) -> str:
-    """주어진 날짜(YYYYMMDD) 또는 오늘 기준 최근 영업일 반환."""
-    if krx is None:
-        target = datetime.today() if date is None else datetime.strptime(date, "%Y%m%d")
-        return target.strftime("%Y%m%d")
+    """주어진 날짜(YYYYMMDD) 또는 오늘 기준 최근 영업일 반환.
 
+    주말/공휴일을 제외한 가장 최근 평일 반환.
+    (pykrx 불필요 — 단순 평일 계산)
+    """
     target = datetime.today() if date is None else datetime.strptime(date, "%Y%m%d")
     for i in range(10):
-        d = (target - timedelta(days=i)).strftime("%Y%m%d")
-        try:
-            tickers = krx.get_market_ticker_list(d, market="KOSPI")
-            if tickers:
-                return d
-        except Exception:
-            continue
+        d = target - timedelta(days=i)
+        if d.weekday() < 5:  # 0=월 ~ 4=금
+            return d.strftime("%Y%m%d")
     return target.strftime("%Y%m%d")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# [1] pykrx — 유니버스 & 시장 스냅샷
+# [1] 유니버스 (FDR) + 펀더멘탈 (pykrx 개별종목 API)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_universe(date: str) -> list[str]:
-    """KOSPI + KOSDAQ 전종목 ticker 리스트 반환."""
-    if krx is None:
-        raise ImportError("pykrx를 설치하세요: pip install pykrx")
+def get_universe(date: str = None) -> list[str]:
+    """KOSPI + KOSDAQ 전종목 ticker 리스트 반환.
+
+    FinanceDataReader StockListing 사용 (kind.krx.co.kr — 차단 없음).
+    """
+    if fdr is None:
+        raise ImportError("FinanceDataReader를 설치하세요: pip install finance-datareader")
+
     tickers = []
     for market in config.MARKETS:
         try:
-            t = krx.get_market_ticker_list(date, market=market)
+            listing = fdr.StockListing(market)
+            t = listing["Symbol"].dropna().astype(str).tolist()
             tickers.extend(t)
-            time.sleep(random.uniform(*config.DELAY_API))
+            logger.info(f"[Collector] {market} 유니버스: {len(t)}종목 (FDR)")
         except Exception as e:
             logger.error(f"[Collector] {market} 종목 목록 조회 실패: {e}")
+
     return list(set(tickers))
+
+
+def get_fundamentals_range(start_date: str, end_date: str,
+                            tickers: Optional[list] = None) -> pd.DataFrame:
+    """
+    전체 기간 펀더멘탈 수집 — 종목별 1회 호출.
+
+    pykrx get_market_fundamental(start, end, ticker) 사용.
+    개별종목시세 엔드포인트 — GitHub Actions(Azure) / 로컬 공통 차단 없음.
+
+    Bootstrap에서 전체 기간을 한 번에 수집 후 월별 재구성에 활용.
+      예) get_fundamentals_range("20100101", "20251231")
+          → 2,000 종목 × 1회 API 호출 ≈ 10분
+
+    Returns DataFrame: date(YYYYMMDD), ticker, PER, PBR, EPS, BPS, DIV
+    """
+    if krx is None:
+        raise ImportError("pykrx를 설치하세요: pip install pykrx")
+
+    if tickers is None:
+        tickers = get_universe()
+
+    logger.info(
+        f"[Collector] 펀더멘탈 범위 수집: {len(tickers)}종목 "
+        f"({start_date}~{end_date}) — pykrx 개별종목 API"
+    )
+
+    try:
+        from tqdm import tqdm
+        ticker_iter = tqdm(tickers, desc="Fundamentals")
+    except ImportError:
+        ticker_iter = tickers
+
+    all_rows = []
+    for ticker in ticker_iter:
+        for attempt in range(config.MAX_RETRY):
+            try:
+                df = krx.get_market_fundamental(start_date, end_date, ticker)
+                if df is None or df.empty:
+                    break
+                df = df.reset_index()
+                # 인덱스 컬럼명 정규화 ('날짜' 또는 datetime index)
+                date_col = df.columns[0]
+                df = df.rename(columns={date_col: "date"})
+                df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y%m%d")
+                df["ticker"] = ticker
+                keep = ["date", "ticker", "PER", "PBR", "EPS", "BPS", "DIV"]
+                df = df[[c for c in keep if c in df.columns]]
+                all_rows.append(df)
+                break
+            except Exception as e:
+                if attempt < config.MAX_RETRY - 1:
+                    time.sleep(config.BACKOFF_BASE ** attempt + random.uniform(0, 1))
+                else:
+                    logger.debug(f"[Collector] {ticker} 펀더멘탈 실패: {e}")
+        time.sleep(random.uniform(0.2, 0.4))
+
+    if not all_rows:
+        logger.warning("[Collector] 펀더멘탈 수집 결과 없음")
+        return pd.DataFrame()
+
+    result = pd.concat(all_rows, ignore_index=True)
+    logger.info(
+        f"[Collector] 펀더멘탈 수집 완료: {len(result):,}건 "
+        f"({result['ticker'].nunique()}종목)"
+    )
+    return result
 
 
 def get_market_snapshot(date: str) -> pd.DataFrame:
     """
-    특정 날짜의 KOSPI+KOSDAQ 전종목 스냅샷 수집.
+    단일 날짜 시장 스냅샷 (일별 Daily 모드용).
 
-    Returns DataFrame:
-      date, ticker, name, market, close, volume, market_cap, PER, PBR, EPS, BPS, DIV
+    get_fundamentals_range(date, date) 로 당일 PER/PBR 수집.
+    Bootstrap에는 historical.collect_market_range() 를 사용하세요.
+
+    Returns DataFrame: date, ticker, PER, PBR, EPS, BPS, DIV
     """
-    if krx is None:
-        raise ImportError("pykrx를 설치하세요: pip install pykrx")
-
-    all_data = []
-
-    for market in config.MARKETS:
-        logger.info(f"[Collector] {market} {date} 스냅샷 수집 중...")
-        df = _collect_market_single(date, market)
-        if df is not None and not df.empty:
-            df["market"] = market
-            all_data.append(df)
-        time.sleep(random.uniform(*config.DELAY_MARKET))
-
-    if not all_data:
-        logger.warning(f"[Collector] {date} 시장 데이터 없음")
-        return pd.DataFrame()
-
-    result = pd.concat(all_data, ignore_index=True)
-    logger.info(f"[Collector] {date} 스냅샷 수집 완료: {len(result)}종목")
-    return result
-
-
-def _collect_market_single(date: str, market: str) -> Optional[pd.DataFrame]:
-    """단일 마켓(KOSPI/KOSDAQ) 스냅샷 수집. 재시도 포함.
-
-    ⚠️  get_market_cap 엔드포인트는 Azure IP에서 KRX가 차단 → get_market_ohlcv_by_ticker 기본 사용.
-        시가총액(market_cap)은 get_market_cap 선택적 시도, 실패 시 None으로 저장.
-    """
-    for attempt in range(config.MAX_RETRY):
-        try:
-            if attempt > 0:
-                wait = config.BACKOFF_BASE ** attempt + random.uniform(1, 3)
-                logger.info(f"[Collector] {market} {date} 재시도 {attempt} ({wait:.1f}초)")
-                time.sleep(wait)
-
-            # OHLCV — Azure IP에서 동작 확인된 엔드포인트
-            df_ohlcv = krx.get_market_ohlcv_by_ticker(date, market=market)
-
-            if df_ohlcv is None or df_ohlcv.empty:
-                logger.warning(f"[Collector] {market} {date} OHLCV 빈 응답 → 재시도")
-                continue
-
-            required = ["종가", "거래량"]
-            missing = [c for c in required if c not in df_ohlcv.columns]
-            if missing:
-                logger.warning(f"[Collector] {market} {date} 누락 컬럼: {missing} → 재시도")
-                continue
-
-            time.sleep(random.uniform(*config.DELAY_API))
-
-            # PER/PBR/EPS/BPS/DIV (선택적)
-            df_fund = pd.DataFrame()
-            try:
-                df_fund = krx.get_market_fundamental(date, market=market)
-                if df_fund is None or df_fund.empty:
-                    df_fund = pd.DataFrame()
-            except Exception as e:
-                logger.warning(f"[Collector] {market} {date} 펀더멘털 수집 실패: {e}")
-
-            time.sleep(random.uniform(*config.DELAY_API))
-
-            # 시가총액 (선택적 — Azure에서 차단될 수 있음)
-            df_cap = pd.DataFrame()
-            try:
-                df_cap_raw = krx.get_market_cap(date, market=market)
-                if df_cap_raw is not None and not df_cap_raw.empty and "시가총액" in df_cap_raw.columns:
-                    df_cap = df_cap_raw[["시가총액"]].copy()
-            except Exception:
-                pass  # 시가총액 없이 진행
-
-            time.sleep(random.uniform(*config.DELAY_API))
-
-            # 종목명
-            tickers = krx.get_market_ticker_list(date, market=market)
-            names = {}
-            for t in tickers:
-                try:
-                    names[t] = krx.get_market_ticker_name(t)
-                except Exception:
-                    names[t] = ""
-
-            # 합치기
-            df = df_ohlcv.copy()
-            if not df_fund.empty:
-                df = df.join(df_fund, how="left")
-            if not df_cap.empty:
-                df = df.join(df_cap, how="left")
-
-            df.index.name = "ticker"
-            df = df.reset_index()
-            df["date"] = date
-            df["name"] = df["ticker"].map(names).fillna("")
-
-            # 컬럼 정리
-            rename_map = {
-                "시가": "open", "고가": "high", "저가": "low",
-                "종가": "close", "거래량": "volume", "거래대금": "trading_value",
-                "시가총액": "market_cap",
-                "PER": "PER", "PBR": "PBR", "EPS": "EPS", "BPS": "BPS", "DIV": "DIV",
-            }
-            df = df.rename(columns=rename_map)
-            keep = ["date", "ticker", "name", "open", "high", "low",
-                    "close", "volume", "trading_value", "market_cap",
-                    "PER", "PBR", "EPS", "BPS", "DIV"]
-            df = df[[c for c in keep if c in df.columns]]
-            df = df[df["close"] > 0]  # 거래정지 제외
-
-            return df
-
-        except Exception as e:
-            logger.error(f"[Collector] {market} {date} 시도 {attempt + 1} 실패: {e}")
-
-    return None
+    return get_fundamentals_range(date, date)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -246,15 +215,15 @@ def get_daily_prices_month(yyyymm: str) -> pd.DataFrame:
     """
     특정 월의 전체 일별 OHLCV 수집 (전종목).
 
-    yfinance (Yahoo Finance) 사용 — KRX 전종목시세 엔드포인트 차단 우회.
-    종목 목록은 pykrx get_market_ticker_list로 조회.
+    yfinance (Yahoo Finance) + FDR 종목 목록 사용.
+    KRX 전종목시세 엔드포인트 차단 우회 — 로컬/Actions 공통 경로.
 
     Returns DataFrame: date, ticker, open, high, low, close, volume
     """
     if yf is None:
         raise ImportError("yfinance를 설치하세요: pip install yfinance")
-    if krx is None:
-        raise ImportError("pykrx를 설치하세요: pip install pykrx")
+    if fdr is None:
+        raise ImportError("FinanceDataReader를 설치하세요: pip install finance-datareader")
 
     year  = int(yyyymm[:4])
     month = int(yyyymm[4:6])
@@ -267,17 +236,16 @@ def get_daily_prices_month(yyyymm: str) -> pd.DataFrame:
 
     logger.info(f"[Collector] 일별 주가 수집 (yfinance): {yyyymm} ({start}~{end_dt.strftime('%Y-%m-%d')})")
 
-    # 종목 목록 (KRX ticker → Yahoo suffix)
+    # 종목 목록 — FinanceDataReader StockListing (kind.krx.co.kr, 차단 없음)
     ticker_map: dict[str, str] = {}  # "005930.KS" → "005930"
     suffix_map = {"KOSPI": ".KS", "KOSDAQ": ".KQ"}
-    ref_date = f"{year:04d}{month:02d}01"
     for market in config.MARKETS:
         try:
-            tlist = krx.get_market_ticker_list(ref_date, market=market)
+            listing = fdr.StockListing(market)
             sfx = suffix_map.get(market, ".KS")
-            for t in tlist:
-                ticker_map[f"{t}{sfx}"] = t
-            time.sleep(random.uniform(*config.DELAY_API))
+            for ticker in listing["Symbol"].dropna().astype(str):
+                ticker_map[f"{ticker}{sfx}"] = ticker
+            logger.info(f"[Collector] {market} 종목 수: {len(listing)}")
         except Exception as e:
             logger.error(f"[Collector] {market} 종목 목록 조회 실패: {e}")
 
@@ -341,18 +309,6 @@ def get_daily_prices_month(yyyymm: str) -> pd.DataFrame:
     result = pd.concat(all_rows, ignore_index=True)
     logger.info(f"[Collector] {yyyymm} 일별 주가 수집 완료: {len(result):,}건")
     return result
-
-
-def _get_trading_days(start: str, end: str) -> list[str]:
-    """KODEX200 기준 거래일 목록 조회."""
-    try:
-        ref = krx.get_market_ohlcv(start, end, "069500")
-        if ref is None or ref.empty:
-            return []
-        return [d.strftime("%Y%m%d") for d in ref.index]
-    except Exception as e:
-        logger.error(f"[Collector] 거래일 조회 실패: {e}")
-        return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════

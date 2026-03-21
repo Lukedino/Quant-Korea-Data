@@ -6,10 +6,14 @@ config.py — 환경변수 참조 설정
 import os
 import sys
 
+from dotenv import load_dotenv
+load_dotenv()  # 로컬 실행 시 .env 파일 자동 로드
+
 # ── API 키 (GitHub Secrets → 환경변수) ─────────────────────────────────────────
 DART_API_KEY      = os.environ.get("DART_API_KEY", "")
 GDRIVE_FOLDER_ID  = os.environ.get("GDRIVE_FOLDER_ID", "")
 GDRIVE_CREDS_PATH = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "gdrive_creds.json")
+GDRIVE_TOKEN_PATH = os.environ.get("GDRIVE_TOKEN_PATH", "")  # OAuth2 사용자 토큰
 
 # ── 환경 자동 감지 ─────────────────────────────────────────────────────────────
 IN_GITHUB_ACTIONS = os.environ.get("GITHUB_ACTIONS") == "true"
@@ -19,11 +23,12 @@ IN_COLAB          = "google.colab" in str(sys.modules)
 LOCAL_DATA_DIR = os.environ.get("LOCAL_DATA_DIR", "data/local")
 
 # ── Google Drive 폴더 구조 (GDRIVE_FOLDER_ID 하위) ────────────────────────────
+# ⚠️  Crawler와 폴더 충돌 방지: quant-korea-data/ 서브폴더에 격리
 DRIVE_PATHS = {
-    "market":     "data/market",      # 월별 시장 스냅샷 YYYYMM.parquet
-    "financials": "data/financials",  # 연간 재무제표 YYYY.parquet
-    "prices":     "data/prices",      # 월별 일별 주가 YYYYMM.parquet
-    "progress":   "data/progress",    # 수집 진행 현황 collection_status.json
+    "market":     "quant-korea-data/market",      # 월별 시장 스냅샷 YYYYMM.parquet
+    "financials": "quant-korea-data/financials",  # 연간 재무제표 YYYY.parquet
+    "prices":     "quant-korea-data/prices",      # 월별 일별 주가 YYYYMM.parquet
+    "progress":   "quant-korea-data/progress",    # 수집 진행 현황 collection_status.json
 }
 
 # ── 수집 대상 시장 ─────────────────────────────────────────────────────────────

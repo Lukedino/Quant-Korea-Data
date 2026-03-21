@@ -1,14 +1,21 @@
 """
-data/drive_uploader.py — Google Drive Service Account 기반 업로드/다운로드
+data/drive_uploader.py — Google Drive 업로드/다운로드
 
-인증 방식: Service Account JSON (GOOGLE_APPLICATION_CREDENTIALS 환경변수)
+인증 우선순위:
+  1. OAuth2 사용자 토큰 (GDRIVE_TOKEN_PATH 환경변수) — 개인 계정, 할당량 사용
+  2. Service Account (GOOGLE_APPLICATION_CREDENTIALS 환경변수) — Shared Drive 전용
+
+⚠️  Service Account는 일반 My Drive 폴더에 새 파일을 생성할 수 없습니다.
+    개인 구글 계정 사용자는 OAuth2 토큰을 사용하세요.
+    최초 설정: py -3.12 scripts/setup_oauth.py
+
 대상 폴더: GDRIVE_FOLDER_ID 환경변수 (루트 폴더)
 
 폴더 구조 (루트 폴더 하위):
-  data/market/      ← YYYYMM.parquet
-  data/financials/  ← YYYY.parquet
-  data/prices/      ← YYYYMM.parquet
-  data/progress/    ← collection_status.json
+  quant-korea-data/market/      ← YYYYMM.parquet
+  quant-korea-data/financials/  ← YYYY.parquet
+  quant-korea-data/prices/      ← YYYYMM.parquet
+  quant-korea-data/progress/    ← collection_status.json
 """
 
 import logging
@@ -37,20 +44,40 @@ class DriveUploader:
         if self._service is not None:
             return self._service
 
+        from googleapiclient.discovery import build
+
+        # [1] OAuth2 사용자 토큰 우선 사용 (개인 계정 Drive 접근)
+        token_path = config.GDRIVE_TOKEN_PATH
+        if token_path and Path(token_path).exists():
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request
+            import json
+
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                with open(token_path, "w") as f:
+                    f.write(creds.to_json())
+                logger.debug("[Drive] OAuth2 토큰 갱신 완료")
+            self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
+            logger.info("[Drive] OAuth2 사용자 인증 사용")
+            return self._service
+
+        # [2] Service Account (Shared Drive 전용 — 개인 My Drive에는 새 파일 생성 불가)
         creds_path = config.GDRIVE_CREDS_PATH
         if not Path(creds_path).exists():
             raise FileNotFoundError(
-                f"Google 자격증명 파일이 없습니다: {creds_path}\n"
-                "GitHub Secrets의 GDRIVE_CREDENTIALS를 등록하고 워크플로우에서 디코딩하세요."
+                f"Google 자격증명 파일이 없습니다.\n"
+                f"OAuth2 설정: py -3.12 scripts/setup_oauth.py\n"
+                f"Service Account 경로: {creds_path}"
             )
 
         from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-
         creds = service_account.Credentials.from_service_account_file(
             creds_path, scopes=SCOPES
         )
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        logger.info("[Drive] Service Account 인증 사용")
         return self._service
 
     # ── 폴더 탐색 & 생성 ───────────────────────────────────────────────────────
@@ -78,6 +105,8 @@ class DriveUploader:
                    f"and '{current_parent}' in parents and trashed=false"),
                 fields="files(id, name)",
                 spaces="drive",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
             ).execute()
             files = resp.get("files", [])
 
@@ -89,6 +118,7 @@ class DriveUploader:
                     body={"name": part, "mimeType": MIME_FOLDER,
                           "parents": [current_parent]},
                     fields="id",
+                    supportsAllDrives=True,
                 ).execute()
                 current_parent = folder["id"]
                 logger.debug(f"[Drive] 폴더 생성: {part} (id={current_parent})")
@@ -103,6 +133,8 @@ class DriveUploader:
             q=(f"name='{filename}' and '{folder_id}' in parents and trashed=false"),
             fields="files(id, name)",
             spaces="drive",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         ).execute()
         files = resp.get("files", [])
         return files[0]["id"] if files else None
@@ -135,6 +167,7 @@ class DriveUploader:
                 fileId=existing_id,
                 media_body=media,
                 fields="id",
+                supportsAllDrives=True,
             ).execute()
             logger.info(f"[Drive] 업데이트: {remote_subfolder}/{filename}")
         else:
@@ -142,6 +175,7 @@ class DriveUploader:
                 body={"name": filename, "parents": [folder_id]},
                 media_body=media,
                 fields="id",
+                supportsAllDrives=True,
             ).execute()
             logger.info(f"[Drive] 업로드: {remote_subfolder}/{filename}")
 
@@ -214,6 +248,8 @@ class DriveUploader:
             q=f"'{folder_id}' in parents and trashed=false",
             fields="files(id, name)",
             spaces="drive",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         ).execute()
         files = resp.get("files", [])
 

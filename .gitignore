@@ -4,6 +4,8 @@ service-account.json
 *.json.key
 .env
 .env.*
+oauth_client_secret.json
+data/oauth_token.json
 
 # ── 수집 데이터 — Drive에만 저장 ─────────────────────────────
 data/local/
