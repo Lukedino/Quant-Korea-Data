@@ -1,5 +1,5 @@
 # ── 데이터 수집 ───────────────────────────────────────────────
-pykrx==0.3.2
+pykrx==1.0.51
 finance-datareader>=0.9.0
 OpenDartReader>=0.2.0
 requests>=2.31.0
