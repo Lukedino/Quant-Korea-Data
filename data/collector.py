@@ -138,7 +138,11 @@ def get_market_snapshot(date: str) -> pd.DataFrame:
 
 
 def _collect_market_single(date: str, market: str) -> Optional[pd.DataFrame]:
-    """단일 마켓(KOSPI/KOSDAQ) 스냅샷 수집. 재시도 포함."""
+    """단일 마켓(KOSPI/KOSDAQ) 스냅샷 수집. 재시도 포함.
+
+    ⚠️  get_market_cap 엔드포인트는 Azure IP에서 KRX가 차단 → get_market_ohlcv_by_ticker 기본 사용.
+        시가총액(market_cap)은 get_market_cap 선택적 시도, 실패 시 None으로 저장.
+    """
     for attempt in range(config.MAX_RETRY):
         try:
             if attempt > 0:
@@ -146,28 +150,40 @@ def _collect_market_single(date: str, market: str) -> Optional[pd.DataFrame]:
                 logger.info(f"[Collector] {market} {date} 재시도 {attempt} ({wait:.1f}초)")
                 time.sleep(wait)
 
-            # 시가총액 + OHLCV
-            df_cap = krx.get_market_cap(date, market=market)
+            # OHLCV — Azure IP에서 동작 확인된 엔드포인트
+            df_ohlcv = krx.get_market_ohlcv_by_ticker(date, market=market)
 
-            # 방어 코드: None / 빈 DataFrame
-            if df_cap is None or df_cap.empty:
-                logger.warning(f"[Collector] {market} {date} 빈 응답 → 재시도")
+            if df_ohlcv is None or df_ohlcv.empty:
+                logger.warning(f"[Collector] {market} {date} OHLCV 빈 응답 → 재시도")
                 continue
 
-            # 방어 코드: 필수 컬럼 존재 여부
-            required = ["종가", "시가총액", "거래량"]
-            missing = [c for c in required if c not in df_cap.columns]
+            required = ["종가", "거래량"]
+            missing = [c for c in required if c not in df_ohlcv.columns]
             if missing:
                 logger.warning(f"[Collector] {market} {date} 누락 컬럼: {missing} → 재시도")
                 continue
 
             time.sleep(random.uniform(*config.DELAY_API))
 
-            # PER/PBR/EPS/BPS/DIV
-            df_fund = krx.get_market_fundamental(date, market=market)
-            if df_fund is None or df_fund.empty:
-                logger.warning(f"[Collector] {market} {date} 펀더멘털 빈 응답 → cap만 사용")
-                df_fund = pd.DataFrame()
+            # PER/PBR/EPS/BPS/DIV (선택적)
+            df_fund = pd.DataFrame()
+            try:
+                df_fund = krx.get_market_fundamental(date, market=market)
+                if df_fund is None or df_fund.empty:
+                    df_fund = pd.DataFrame()
+            except Exception as e:
+                logger.warning(f"[Collector] {market} {date} 펀더멘털 수집 실패: {e}")
+
+            time.sleep(random.uniform(*config.DELAY_API))
+
+            # 시가총액 (선택적 — Azure에서 차단될 수 있음)
+            df_cap = pd.DataFrame()
+            try:
+                df_cap_raw = krx.get_market_cap(date, market=market)
+                if df_cap_raw is not None and not df_cap_raw.empty and "시가총액" in df_cap_raw.columns:
+                    df_cap = df_cap_raw[["시가총액"]].copy()
+            except Exception:
+                pass  # 시가총액 없이 진행
 
             time.sleep(random.uniform(*config.DELAY_API))
 
@@ -181,7 +197,12 @@ def _collect_market_single(date: str, market: str) -> Optional[pd.DataFrame]:
                     names[t] = ""
 
             # 합치기
-            df = df_cap.join(df_fund, how="outer") if not df_fund.empty else df_cap.copy()
+            df = df_ohlcv.copy()
+            if not df_fund.empty:
+                df = df.join(df_fund, how="left")
+            if not df_cap.empty:
+                df = df.join(df_cap, how="left")
+
             df.index.name = "ticker"
             df = df.reset_index()
             df["date"] = date
@@ -189,13 +210,17 @@ def _collect_market_single(date: str, market: str) -> Optional[pd.DataFrame]:
 
             # 컬럼 정리
             rename_map = {
-                "종가": "close", "거래량": "volume", "시가총액": "market_cap",
+                "시가": "open", "고가": "high", "저가": "low",
+                "종가": "close", "거래량": "volume", "거래대금": "trading_value",
+                "시가총액": "market_cap",
                 "PER": "PER", "PBR": "PBR", "EPS": "EPS", "BPS": "BPS", "DIV": "DIV",
             }
             df = df.rename(columns=rename_map)
-            keep = ["date", "ticker", "name", "close", "volume",
-                    "market_cap", "PER", "PBR", "EPS", "BPS", "DIV"]
+            keep = ["date", "ticker", "name", "open", "high", "low",
+                    "close", "volume", "trading_value", "market_cap",
+                    "PER", "PBR", "EPS", "BPS", "DIV"]
             df = df[[c for c in keep if c in df.columns]]
+            df = df[df["close"] > 0]  # 거래정지 제외
 
             return df
 
