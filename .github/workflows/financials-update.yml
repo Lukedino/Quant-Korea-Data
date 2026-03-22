@@ -38,7 +38,8 @@ jobs:
           echo "GDRIVE_TOKEN_PATH=data/oauth_token.json" >> $GITHUB_ENV
       - name: Financials Update
         env:
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_FOLDER_ID:      ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_OHLC_FOLDER_ID: ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
         run: |
           ARGS="--mode financials-update --upload-drive --market ${{ inputs.market || 'all' }}"
           ${{ inputs.dry_run || 'false' }} && ARGS="$ARGS --dry-run"

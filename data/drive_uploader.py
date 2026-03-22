@@ -36,8 +36,13 @@ MIME_FOLDER  = "application/vnd.google-apps.folder"
 class DriveUploader:
     """Google Drive 업로드/다운로드 클라이언트."""
 
-    def __init__(self):
+    def __init__(self, root_folder_id: Optional[str] = None):
+        """
+        root_folder_id: Drive 루트 폴더 ID. None이면 config.GDRIVE_FOLDER_ID 사용.
+        OHLC/재무 DB처럼 별도 폴더에 저장할 때 config.GDRIVE_OHLC_FOLDER_ID 전달.
+        """
         self._service = None
+        self._root_folder_id = root_folder_id or config.GDRIVE_FOLDER_ID
         self._folder_cache: dict[str, str] = {}  # path → folder_id 캐시
 
     def _get_service(self):
@@ -88,7 +93,7 @@ class DriveUploader:
         존재하면 ID 반환, 없으면 생성 후 ID 반환.
         """
         if parent_id is None:
-            parent_id = config.GDRIVE_FOLDER_ID
+            parent_id = self._root_folder_id
 
         cache_key = f"{parent_id}/{path}"
         if cache_key in self._folder_cache:

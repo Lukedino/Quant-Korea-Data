@@ -237,12 +237,14 @@ def _save_ratios_year(df: pd.DataFrame, market: str, year: int):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_uploader(uploader=None):
-    """DriveUploader 인스턴스 반환 (인자로 받거나 새로 생성)."""
+    """DriveUploader 인스턴스 반환 (인자로 받거나 새로 생성).
+    루트 폴더를 GDRIVE_OHLC_FOLDER_ID([Database] Market Crawling Data)로 설정.
+    """
     if uploader is not None:
         return uploader
     try:
         from data.drive_uploader import DriveUploader
-        return DriveUploader()
+        return DriveUploader(root_folder_id=config.GDRIVE_OHLC_FOLDER_ID or None)
     except Exception as e:
         logger.error(f"[FinancialsDB] DriveUploader 초기화 실패: {e}")
         return None

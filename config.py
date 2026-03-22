@@ -11,9 +11,10 @@ load_dotenv()  # 로컬 실행 시 .env 파일 자동 로드
 
 # ── API 키 (GitHub Secrets → 환경변수) ─────────────────────────────────────────
 DART_API_KEY      = os.environ.get("DART_API_KEY", "")
-GDRIVE_FOLDER_ID  = os.environ.get("GDRIVE_FOLDER_ID", "")
-GDRIVE_CREDS_PATH = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "gdrive_creds.json")
-GDRIVE_TOKEN_PATH = os.environ.get("GDRIVE_TOKEN_PATH", "")  # OAuth2 사용자 토큰
+GDRIVE_FOLDER_ID      = os.environ.get("GDRIVE_FOLDER_ID", "")
+GDRIVE_OHLC_FOLDER_ID = os.environ.get("GDRIVE_OHLC_FOLDER_ID", "")  # [Database] Market Crawling Data 폴더 ID
+GDRIVE_CREDS_PATH     = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "gdrive_creds.json")
+GDRIVE_TOKEN_PATH     = os.environ.get("GDRIVE_TOKEN_PATH", "")  # OAuth2 사용자 토큰
 
 # ── 환경 자동 감지 ─────────────────────────────────────────────────────────────
 IN_GITHUB_ACTIONS = os.environ.get("GITHUB_ACTIONS") == "true"
@@ -29,12 +30,13 @@ DRIVE_PATHS = {
     "financials": "quant-korea-data/financials",  # 연간 재무제표 YYYY.parquet
     "prices":     "quant-korea-data/prices",      # 월별 일별 주가 YYYYMM.parquet
     "progress":   "quant-korea-data/progress",    # 수집 진행 현황 collection_status.json
-    "ohlc_us":     "market-ohlc-db/us",           # US 주식/ETF OHLC (연도별 parquet)
-    "ohlc_crypto": "market-ohlc-db/crypto",       # 크립토 OHLC (연도별 parquet)
-    "ohlc_meta":   "market-ohlc-db/_meta",        # DB 상태 메타 (db_status.json)
-    "us_financials":   "market-ohlc-db/us/financials",   # US 분기 재무제표
-    "us_ratios":       "market-ohlc-db/us/ratios",        # US 재무비율 스냅샷
-    "crypto_ratios":   "market-ohlc-db/crypto/ratios",   # Crypto 시장 데이터 스냅샷
+    # ── OHLC DB (루트: GDRIVE_OHLC_FOLDER_ID = [Database] Market Crawling Data) ──
+    "ohlc_us":       "us",            # US 주식/ETF OHLC (연도별 parquet)
+    "ohlc_crypto":   "crypto",        # 크립토 OHLC (연도별 parquet)
+    "ohlc_meta":     "_meta",         # DB 상태 메타 (db_status.json)
+    "us_financials": "us/financials", # US 분기 재무제표
+    "us_ratios":     "us/ratios",     # US 재무비율 스냅샷
+    "crypto_ratios": "crypto/ratios", # Crypto 시장 데이터 스냅샷
 }
 
 # ── 수집 대상 시장 ─────────────────────────────────────────────────────────────

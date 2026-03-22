@@ -43,7 +43,8 @@ jobs:
           echo "GDRIVE_TOKEN_PATH=data/oauth_token.json" >> $GITHUB_ENV
       - name: OHLC Backfill
         env:
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_FOLDER_ID:      ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_OHLC_FOLDER_ID: ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
         run: |
           ARGS="--mode ohlc-backfill --upload-drive --market ${{ inputs.market }} --start-year ${{ inputs.start_year }}"
           [ -n "${{ inputs.end_year }}" ] && ARGS="$ARGS --end-year ${{ inputs.end_year }}"
