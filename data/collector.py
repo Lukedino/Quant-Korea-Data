@@ -323,6 +323,9 @@ def _get_dart():
         raise ImportError("OpenDartReader를 설치하세요: pip install OpenDartReader")
     if not config.DART_API_KEY:
         raise ValueError("DART_API_KEY가 설정되지 않았습니다. GitHub Secrets에 등록하세요.")
+    import inspect
+    if inspect.isclass(OpenDartReader):
+        return OpenDartReader(config.DART_API_KEY)
     return OpenDartReader.OpenDartReader(config.DART_API_KEY)
 
 
