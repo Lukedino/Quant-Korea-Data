@@ -2,10 +2,11 @@
 main.py — 수집 전용 CLI 진입점
 
 모드:
-  daily        : 오늘 기준 시장 스냅샷 + 이번 달 일별 주가 수집
-  bootstrap    : 특정 연도 과거 데이터 일괄 수집 (체크포인트 기반)
-  ohlc-backfill: US/Crypto OHLC 초기 적재 (연도 범위 지정)
-  ohlc-update  : US/Crypto OHLC 증분 업데이트
+  daily              : 오늘 기준 시장 스냅샷 + 이번 달 일별 주가 수집
+  bootstrap          : 특정 연도 과거 데이터 일괄 수집 (체크포인트 기반)
+  ohlc-backfill      : US/Crypto OHLC 초기 적재 (연도 범위 지정)
+  ohlc-update        : US/Crypto OHLC 증분 업데이트
+  financials-update  : US 재무제표 + Crypto 시장 데이터 수집
 
 사용 예:
   # 오늘 데이터 수집 후 Drive 업로드
@@ -25,6 +26,12 @@ main.py — 수집 전용 CLI 진입점
 
   # US OHLC 증분 업데이트
   python main.py --mode ohlc-update --market us --upload-drive
+
+  # US + Crypto 재무 데이터 수집
+  python main.py --mode financials-update --market all --upload-drive
+
+  # Crypto 재무 데이터만 dry-run 테스트
+  python main.py --mode financials-update --market crypto --dry-run
 """
 
 import argparse
@@ -248,6 +255,32 @@ def run_ohlc_update(args):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# financials-update 모드
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_financials_update(args):
+    """
+    US financials + ratios, Crypto ratios 수집 및 Drive 업로드.
+    --market us|crypto|all 옵션 지원.
+    """
+    from data import financials_collector
+    markets = ["us", "crypto"] if args.market == "all" else [args.market]
+    for market in markets:
+        if market == "us":
+            logger.info("[FinancialsUpdate] US 재무 데이터 수집 시작")
+            if not args.dry_run:
+                financials_collector.collect_us_financials(upload=args.upload_drive)
+            else:
+                logger.info("[DryRun] US financials update 시뮬레이션")
+        elif market == "crypto":
+            logger.info("[FinancialsUpdate] Crypto 시장 데이터 수집 시작")
+            if not args.dry_run:
+                financials_collector.collect_crypto_ratios(upload=args.upload_drive)
+            else:
+                logger.info("[DryRun] crypto financials update 시뮬레이션")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Drive 업로드 헬퍼
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -282,12 +315,13 @@ def main():
 
     parser.add_argument(
         "--mode",
-        choices=["daily", "bootstrap", "ohlc-backfill", "ohlc-update"],
+        choices=["daily", "bootstrap", "ohlc-backfill", "ohlc-update", "financials-update"],
         required=True,
         help=(
             "daily: 오늘 수집 / bootstrap: 과거 연도 일괄 수집 / "
             "ohlc-backfill: US/Crypto OHLC 초기 적재 / "
-            "ohlc-update: US/Crypto OHLC 증분 업데이트"
+            "ohlc-update: US/Crypto OHLC 증분 업데이트 / "
+            "financials-update: US 재무제표 + Crypto 시장 데이터 수집"
         ),
     )
 
@@ -377,6 +411,8 @@ def main():
         run_ohlc_backfill(args)
     elif args.mode == "ohlc-update":
         run_ohlc_update(args)
+    elif args.mode == "financials-update":
+        run_financials_update(args)
 
 
 if __name__ == "__main__":

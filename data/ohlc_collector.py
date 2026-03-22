@@ -7,7 +7,8 @@ data/ohlc_collector.py — US 주식/ETF 및 크립토 OHLC 수집 (yfinance)
   - Crypto: CoinMarketCap Top 200 (동적 크롤링)
             → input/crypto_universe.txt 파일 있으면 해당 파일 우선 사용
 
-출력 스키마: Ticker | Date | Open | High | Low | Close | Volume
+출력 스키마: Ticker | Date | Open | High | Low | Close | Volume |
+            Amount | ChangesRatio | MarketCap | Dividends | Splits
 """
 
 import logging
@@ -334,6 +335,20 @@ def fetch_ohlc_range(tickers: list[str], start: str, end: str) -> pd.DataFrame:
                 df_t = df_t[df_t["Close"] > 0]
 
                 if not df_t.empty:
+                    # ── 파생 컬럼 추가 ────────────────────────────────────
+                    df_t = df_t.sort_values("Date").reset_index(drop=True)
+                    # Amount = Close × Volume (거래대금)
+                    df_t["Amount"] = df_t["Close"] * df_t["Volume"]
+                    # ChangesRatio = (Close / PrevClose - 1) × 100, 첫날 NaN
+                    df_t["ChangesRatio"] = (
+                        df_t["Close"].pct_change() * 100
+                    )
+                    # MarketCap: daily update 시 채워짐
+                    df_t["MarketCap"] = float("nan")
+                    # Dividends / Splits 초기값
+                    df_t["Dividends"] = 0.0
+                    df_t["Splits"]    = 1.0
+
                     all_rows.append(df_t)
 
             except Exception as e:
@@ -346,15 +361,23 @@ def fetch_ohlc_range(tickers: list[str], start: str, end: str) -> pd.DataFrame:
     if failed:
         logger.warning(f"[OhlcCollector] 실패 종목 ({len(failed)}개): {failed[:20]}")
 
+    _EXTENDED_COLS = [
+        "Ticker", "Date", "Open", "High", "Low", "Close", "Volume",
+        "Amount", "ChangesRatio", "MarketCap", "Dividends", "Splits",
+    ]
+
     if not all_rows:
         logger.warning(f"[OhlcCollector] {start}~{end} 수집 결과 없음")
-        return pd.DataFrame(columns=["Ticker", "Date", "Open", "High", "Low", "Close", "Volume"])
+        return pd.DataFrame(columns=_EXTENDED_COLS)
 
     result = pd.concat(all_rows, ignore_index=True)
 
     # 중복 제거
     result = result.drop_duplicates(subset=["Ticker", "Date"], keep="last")
     result = result.sort_values(["Ticker", "Date"]).reset_index(drop=True)
+
+    # 컬럼 순서 통일
+    result = result[[c for c in _EXTENDED_COLS if c in result.columns]]
 
     logger.info(
         f"[OhlcCollector] 수집 완료: {start}~{end} "
@@ -553,6 +576,12 @@ def update_market(
         logger.warning(f"[OhlcCollector] {market} 증분 수집 결과 없음")
         return
 
+    # 6-b. MarketCap 보강
+    if market == "crypto":
+        new_df = _enrich_crypto_marketcap(new_df)
+    else:
+        new_df = _enrich_us_marketcap(new_df)
+
     # 7. append + 업로드
     updated_years = ohlc_db.append_rows(new_df, market)
     if upload and updated_years:
@@ -573,3 +602,116 @@ def update_market(
             ohlc_db.upload_status()
 
     logger.info(f"[OhlcCollector] {market.upper()} 증분 업데이트 완료")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MarketCap 보강 헬퍼
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _enrich_us_marketcap(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    US 주식: 수집된 new_df의 각 Ticker에 대해
+    yf.Ticker(t).fast_info.market_cap으로 오늘 MarketCap 채우기.
+    실패 시 NaN, 에러 로깅 후 계속. 종목당 0.1초 sleep.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return df
+
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
+
+    df = df.copy()
+    if "MarketCap" not in df.columns:
+        df["MarketCap"] = float("nan")
+
+    tickers = df["Ticker"].unique().tolist()
+    logger.info(f"[OhlcCollector] US MarketCap 보강 시작: {len(tickers)}종목")
+
+    ticker_iter = tqdm(tickers, desc="MarketCap(US)", unit="ticker") if tqdm else tickers
+    cap_map: dict[str, float] = {}
+
+    for t in ticker_iter:
+        try:
+            mc = yf.Ticker(t).fast_info.market_cap
+            cap_map[t] = float(mc) if mc is not None else float("nan")
+        except Exception as e:
+            logger.debug(f"[OhlcCollector] {t} MarketCap 조회 실패: {e}")
+            cap_map[t] = float("nan")
+        time.sleep(0.1)
+
+    # 오늘 날짜 행에만 MarketCap 적용 (최신 날짜 기준)
+    today = date.today()
+    mask = df["Date"] == today
+    if not mask.any():
+        # 오늘 데이터가 없으면 max Date에 적용
+        max_date = df["Date"].max()
+        mask = df["Date"] == max_date
+
+    df.loc[mask, "MarketCap"] = df.loc[mask, "Ticker"].map(cap_map)
+
+    filled = mask.sum()
+    logger.info(f"[OhlcCollector] US MarketCap 보강 완료: {filled}행 채움")
+    return df
+
+
+def _enrich_crypto_marketcap(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Crypto: CoinMarketCap에서 현재 시가총액 수집하여 채우기.
+    실패 시 NaN, 에러 로깅 후 계속.
+    """
+    df = df.copy()
+    if "MarketCap" not in df.columns:
+        df["MarketCap"] = float("nan")
+
+    try:
+        sess = requests.Session()
+        sess.headers.update({
+            "User-Agent": _SESSION.headers["User-Agent"],
+            "Accept": "application/json",
+        })
+        resp = sess.get(_CMC_URL, params=_CMC_PARAMS, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        crypto_list = data.get("data", {}).get("cryptoCurrencyList", [])
+        if not crypto_list:
+            crypto_list = data.get("data", [])
+
+        cap_map: dict[str, float] = {}
+        for item in crypto_list:
+            symbol = item.get("symbol", "").upper().strip()
+            if not symbol:
+                continue
+            ticker_key = f"{symbol}-USD"
+            # CMC quotes 구조: {"USD": {"price": ..., "marketCap": ...}}
+            quotes = item.get("quotes", [])
+            mc = None
+            if isinstance(quotes, list) and quotes:
+                mc = quotes[0].get("marketCap")
+            elif isinstance(quotes, dict):
+                mc = quotes.get("USD", {}).get("marketCap")
+            if mc is None:
+                mc = item.get("market_cap")
+            cap_map[ticker_key] = float(mc) if mc is not None else float("nan")
+
+        logger.info(f"[OhlcCollector] CMC MarketCap 수집: {len(cap_map)}종목")
+
+        # 최신 날짜 행에 적용
+        today = date.today()
+        mask = df["Date"] == today
+        if not mask.any():
+            max_date = df["Date"].max()
+            mask = df["Date"] == max_date
+
+        df.loc[mask, "MarketCap"] = df.loc[mask, "Ticker"].map(cap_map)
+        filled = mask.sum()
+        logger.info(f"[OhlcCollector] Crypto MarketCap 보강 완료: {filled}행 채움")
+
+    except Exception as e:
+        logger.error(f"[OhlcCollector] CMC MarketCap 수집 실패: {e}")
+
+    return df

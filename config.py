@@ -32,6 +32,9 @@ DRIVE_PATHS = {
     "ohlc_us":     "market-ohlc-db/us",           # US 주식/ETF OHLC (연도별 parquet)
     "ohlc_crypto": "market-ohlc-db/crypto",       # 크립토 OHLC (연도별 parquet)
     "ohlc_meta":   "market-ohlc-db/_meta",        # DB 상태 메타 (db_status.json)
+    "us_financials":   "market-ohlc-db/us/financials",   # US 분기 재무제표
+    "us_ratios":       "market-ohlc-db/us/ratios",        # US 재무비율 스냅샷
+    "crypto_ratios":   "market-ohlc-db/crypto/ratios",   # Crypto 시장 데이터 스냅샷
 }
 
 # ── 수집 대상 시장 ─────────────────────────────────────────────────────────────

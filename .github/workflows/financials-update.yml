@@ -1,0 +1,55 @@
+name: "Financials Update — US/Crypto 재무 데이터"
+
+on:
+  schedule:
+    # 매월 첫째 월요일 UTC 01:00 (KST 10:00)
+    - cron: '0 1 1-7 * 1'
+  workflow_dispatch:
+    inputs:
+      market:
+        description: '대상 시장'
+        type: choice
+        options: [all, us, crypto]
+        default: all
+      dry_run:
+        description: '테스트 실행'
+        type: boolean
+        default: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120   # US 600종목 info 수집은 시간 걸림
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Setup Google Drive token
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: |
+          mkdir -p data
+          python -c "import base64,os; open('data/oauth_token.json','wb').write(base64.b64decode(''.join(os.environ['GDRIVE_TOKEN'].split())))"
+          echo "GDRIVE_TOKEN_PATH=data/oauth_token.json" >> $GITHUB_ENV
+      - name: Financials Update
+        env:
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          ARGS="--mode financials-update --upload-drive --market ${{ inputs.market || 'all' }}"
+          ${{ inputs.dry_run || 'false' }} && ARGS="$ARGS --dry-run"
+          python main.py $ARGS
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: financials-log-${{ github.run_id }}
+          path: collection.log
+          retention-days: 14
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f gdrive_creds.json data/oauth_token.json
