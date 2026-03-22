@@ -2,58 +2,221 @@
 data/ohlc_collector.py — US 주식/ETF 및 크립토 OHLC 수집 (yfinance)
 
 유니버스:
-  - US  : input/us_universe.txt (없으면 내장 기본값 60종목)
-  - Crypto: input/crypto_universe.txt (없으면 내장 기본값 30종목)
+  - US    : S&P500 + NASDAQ100 + DOW30 + LukePicks (동적 크롤링)
+            → input/us_universe.txt 파일 있으면 해당 파일 우선 사용
+  - Crypto: CoinMarketCap Top 200 (동적 크롤링)
+            → input/crypto_universe.txt 파일 있으면 해당 파일 우선 사용
 
 출력 스키마: Ticker | Date | Open | High | Low | Close | Volume
 """
 
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta
+from io import StringIO
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import requests
 
 logger = logging.getLogger(__name__)
 
-# ── 기본 유니버스 ─────────────────────────────────────────────────────────────
-
-_DEFAULT_US = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "LLY", "TSM",
-    "JPM", "V", "UNH", "XOM", "MA", "JNJ", "PG", "COST", "HD", "NFLX",
-    "CRM", "AMD", "INTC", "QCOM", "AMAT", "PLTR", "SMCI", "ARM", "MSTR", "COIN",
-    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "ARKK", "XLF", "XLE", "XLK",
-    "XLV", "XLI", "XLC", "XLRE", "XLU", "XLP", "XLB", "XLY", "GLD", "SLV",
-    "TLT", "HYG", "LQD", "EEM", "EFA", "SOXX", "SMH", "KWEB", "MCHI", "FXI",
-]
-
-_DEFAULT_CRYPTO = [
-    "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
-    "AVAX-USD", "TRX-USD", "LINK-USD", "DOT-USD", "MATIC-USD", "LTC-USD", "BCH-USD",
-    "UNI-USD", "ATOM-USD", "XLM-USD", "FIL-USD", "HBAR-USD", "ICP-USD",
-    "NEAR-USD", "APT-USD", "ARB-USD", "OP-USD", "INJ-USD", "SUI-USD", "SEI-USD",
-    "FTM-USD", "ALGO-USD", "VET-USD",
-]
-
+# ── 파일 override 경로 ────────────────────────────────────────────────────────
 _UNIVERSE_FILES = {
     "us":     "input/us_universe.txt",
     "crypto": "input/crypto_universe.txt",
 }
 
-_BATCH_SIZE = 50  # rate limit 방지
+# ── LukePicks 경로 ────────────────────────────────────────────────────────────
+_LUKE_PICKS_PATH = Path("input/Luke Picks.xlsx")
+
+# ── MANUAL 보완 목록 (동적 크롤링 실패 시 최소 보장) ─────────────────────────
+_MANUAL_US = [
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "ARKK",
+    "XLF", "XLE", "XLK", "XLV", "XLI", "XLC", "XLRE", "XLU", "XLP", "XLB", "XLY",
+    "GLD", "SLV", "TLT", "HYG", "LQD", "EEM", "EFA", "VWO", "IEMG", "VEA",
+    "SOXX", "SMH", "KWEB", "MCHI", "FXI",
+    "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
+    "LLY", "TSM", "JPM", "V", "UNH", "XOM", "MA", "JNJ", "PG",
+    "COST", "HD", "NFLX", "CRM", "AMD", "INTC", "QCOM", "AMAT",
+    "PLTR", "SMCI", "ARM", "MSTR", "COIN",
+]
+
+_MANUAL_CRYPTO = [
+    "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
+    "AVAX-USD", "TRX-USD", "LINK-USD", "DOT-USD", "MATIC-USD", "LTC-USD", "BCH-USD",
+    "UNI-USD", "ATOM-USD", "XLM-USD", "FIL-USD", "HBAR-USD", "ICP-USD",
+    "NEAR-USD", "APT-USD", "ARB-USD", "OP-USD", "INJ-USD", "SUI-USD",
+    "FTM-USD", "ALGO-USD", "VET-USD", "STX-USD",
+]
+
+_BATCH_SIZE = 50   # yfinance rate limit 방지
+_CMC_TOP_N  = 200  # CoinMarketCap 상위 N개
+
+# ── HTTP 세션 ─────────────────────────────────────────────────────────────────
+_SESSION = requests.Session()
+_SESSION.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 유니버스 로드
+# 유니버스 동적 크롤링 — US
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _normalize_ticker(raw: str) -> str:
+    """티커 정규화: 공백 제거, 대문자, '.' → '-', 특수문자 제거."""
+    t = str(raw).strip().upper().replace("$", "").replace(".", "-")
+    return re.sub(r"[^A-Z0-9\-]", "", t)
+
+
+def _fetch_sp500() -> list[str]:
+    try:
+        resp = _SESSION.get(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", timeout=15
+        )
+        resp.raise_for_status()
+        tables = pd.read_html(StringIO(resp.text))
+        tickers = tables[0]["Symbol"].dropna().tolist()
+        logger.info(f"[Universe] S&P500: {len(tickers)}종목")
+        return tickers
+    except Exception as e:
+        logger.warning(f"[Universe] S&P500 크롤링 실패: {e}")
+        return []
+
+
+def _fetch_nasdaq100() -> list[str]:
+    try:
+        resp = _SESSION.get("https://en.wikipedia.org/wiki/Nasdaq-100", timeout=15)
+        resp.raise_for_status()
+        tables = pd.read_html(StringIO(resp.text))
+        for t in tables:
+            for col in ("Ticker", "Symbol"):
+                if col in t.columns:
+                    tickers = t[col].dropna().tolist()
+                    logger.info(f"[Universe] NASDAQ100: {len(tickers)}종목")
+                    return tickers
+    except Exception as e:
+        logger.warning(f"[Universe] NASDAQ100 크롤링 실패: {e}")
+    return []
+
+
+def _fetch_dow30() -> list[str]:
+    try:
+        resp = _SESSION.get(
+            "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average", timeout=15
+        )
+        resp.raise_for_status()
+        tables = pd.read_html(StringIO(resp.text))
+        for t in tables:
+            if "Symbol" in t.columns:
+                tickers = t["Symbol"].dropna().tolist()
+                logger.info(f"[Universe] DOW30: {len(tickers)}종목")
+                return tickers
+    except Exception as e:
+        logger.warning(f"[Universe] DOW30 크롤링 실패: {e}")
+    return []
+
+
+def _load_luke_picks() -> list[str]:
+    if not _LUKE_PICKS_PATH.exists():
+        return []
+    try:
+        df = pd.read_excel(_LUKE_PICKS_PATH)
+        for col in ("Ticker", "ticker", "Symbol"):
+            if col in df.columns:
+                tickers = df[col].dropna().astype(str).str.strip().tolist()
+                logger.info(f"[Universe] LukePicks: {len(tickers)}종목")
+                return [t for t in tickers if t]
+    except Exception as e:
+        logger.warning(f"[Universe] LukePicks 로드 실패: {e}")
+    return []
+
+
+def _build_us_universe() -> list[str]:
+    """S&P500 + NASDAQ100 + DOW30 + LukePicks + MANUAL → 중복 제거."""
+    raw: list[str] = []
+    raw.extend(_fetch_sp500())
+    raw.extend(_fetch_nasdaq100())
+    raw.extend(_fetch_dow30())
+    raw.extend(_load_luke_picks())
+    raw.extend(_MANUAL_US)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in raw:
+        t = _normalize_ticker(t)
+        if t and t not in seen:
+            seen.add(t)
+            result.append(t)
+
+    logger.info(f"[Universe] US 최종: {len(result)}종목 (중복 제거 후)")
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 유니버스 동적 크롤링 — Crypto (CoinMarketCap Top 200)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_CMC_URL = "https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing"
+_CMC_PARAMS = {
+    "start": "1", "limit": str(_CMC_TOP_N),
+    "sortBy": "market_cap", "sortType": "desc",
+    "convert": "USD", "cryptoType": "all", "tagType": "all",
+}
+
+
+def _fetch_cmc_top200() -> list[str]:
+    """CoinMarketCap Top 200 → yfinance 형식 티커 목록 (BTC-USD 등)."""
+    try:
+        sess = requests.Session()
+        sess.headers.update({"User-Agent": _SESSION.headers["User-Agent"], "Accept": "application/json"})
+        resp = sess.get(_CMC_URL, params=_CMC_PARAMS, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        crypto_list = data.get("data", {}).get("cryptoCurrencyList", [])
+        if not crypto_list:
+            crypto_list = data.get("data", [])
+
+        tickers = []
+        for item in crypto_list[:_CMC_TOP_N]:
+            symbol = item.get("symbol", "").upper().strip()
+            if symbol:
+                tickers.append(f"{symbol}-USD")
+
+        logger.info(f"[Universe] CoinMarketCap Top {len(tickers)}종목")
+        return tickers
+    except Exception as e:
+        logger.warning(f"[Universe] CoinMarketCap 크롤링 실패: {e}")
+        return []
+
+
+def _build_crypto_universe() -> list[str]:
+    """CoinMarketCap Top 200 → 실패 시 MANUAL 폴백."""
+    tickers = _fetch_cmc_top200()
+    if tickers:
+        return tickers
+    logger.warning("[Universe] CMC 실패 → MANUAL 폴백 사용")
+    return list(_MANUAL_CRYPTO)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 유니버스 로드 (공개 API)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_tickers(market: str) -> list[str]:
     """
     티커 목록 로드.
-    input/{market}_universe.txt 파일이 있으면 사용, 없으면 기본값 반환.
-    txt 파일 형식: 한 줄에 티커 1개 (빈 줄/# 주석 무시)
+    1순위: input/{market}_universe.txt 파일 (있으면 그대로 사용)
+    2순위: 동적 크롤링 (US: Wikipedia, Crypto: CoinMarketCap)
     """
     txt_path = Path(_UNIVERSE_FILES.get(market, ""))
     if txt_path.exists():
@@ -64,13 +227,14 @@ def load_tickers(market: str) -> list[str]:
                 if t and not t.startswith("#"):
                     tickers.append(t)
         if tickers:
-            logger.info(f"[OhlcCollector] {market} 유니버스 파일 로드: {len(tickers)}종목 ({txt_path})")
+            logger.info(f"[OhlcCollector] {market} 파일 로드: {len(tickers)}종목 ({txt_path})")
             return tickers
-        logger.warning(f"[OhlcCollector] {txt_path} 비어 있음 → 기본값 사용")
+        logger.warning(f"[OhlcCollector] {txt_path} 비어 있음 → 동적 크롤링으로 전환")
 
-    defaults = _DEFAULT_US if market == "us" else _DEFAULT_CRYPTO
-    logger.info(f"[OhlcCollector] {market} 기본 유니버스 사용: {len(defaults)}종목")
-    return list(defaults)
+    if market == "us":
+        return _build_us_universe()
+    else:
+        return _build_crypto_universe()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
