@@ -1,0 +1,60 @@
+name: "OHLC Backfill — US/Crypto 초기 적재"
+
+on:
+  workflow_dispatch:
+    inputs:
+      market:
+        description: '대상 시장'
+        type: choice
+        options: [all, us, crypto]
+        default: all
+      start_year:
+        description: '수집 시작 연도'
+        required: false
+        default: '2020'
+      end_year:
+        description: '수집 종료 연도 (기본: 작년)'
+        required: false
+        default: ''
+      dry_run:
+        description: '테스트 실행 (저장 없음)'
+        type: boolean
+        default: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Setup Google Drive token
+        env:
+          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+        run: |
+          mkdir -p data
+          python -c "import base64,os; open('data/oauth_token.json','wb').write(base64.b64decode(''.join(os.environ['GDRIVE_TOKEN'].split())))"
+          echo "GDRIVE_TOKEN_PATH=data/oauth_token.json" >> $GITHUB_ENV
+      - name: OHLC Backfill
+        env:
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          ARGS="--mode ohlc-backfill --upload-drive --market ${{ inputs.market }} --start-year ${{ inputs.start_year }}"
+          [ -n "${{ inputs.end_year }}" ] && ARGS="$ARGS --end-year ${{ inputs.end_year }}"
+          ${{ inputs.dry_run }} && ARGS="$ARGS --dry-run"
+          python main.py $ARGS
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohlc-backfill-log-${{ github.run_id }}
+          path: collection.log
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f gdrive_creds.json data/oauth_token.json

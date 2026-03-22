@@ -29,6 +29,9 @@ DRIVE_PATHS = {
     "financials": "quant-korea-data/financials",  # 연간 재무제표 YYYY.parquet
     "prices":     "quant-korea-data/prices",      # 월별 일별 주가 YYYYMM.parquet
     "progress":   "quant-korea-data/progress",    # 수집 진행 현황 collection_status.json
+    "ohlc_us":     "market-ohlc-db/us",           # US 주식/ETF OHLC (연도별 parquet)
+    "ohlc_crypto": "market-ohlc-db/crypto",       # 크립토 OHLC (연도별 parquet)
+    "ohlc_meta":   "market-ohlc-db/_meta",        # DB 상태 메타 (db_status.json)
 }
 
 # ── 수집 대상 시장 ─────────────────────────────────────────────────────────────

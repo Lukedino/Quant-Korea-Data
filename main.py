@@ -2,8 +2,10 @@
 main.py — 수집 전용 CLI 진입점
 
 모드:
-  daily      : 오늘 기준 시장 스냅샷 + 이번 달 일별 주가 수집
-  bootstrap  : 특정 연도 과거 데이터 일괄 수집 (체크포인트 기반)
+  daily        : 오늘 기준 시장 스냅샷 + 이번 달 일별 주가 수집
+  bootstrap    : 특정 연도 과거 데이터 일괄 수집 (체크포인트 기반)
+  ohlc-backfill: US/Crypto OHLC 초기 적재 (연도 범위 지정)
+  ohlc-update  : US/Crypto OHLC 증분 업데이트
 
 사용 예:
   # 오늘 데이터 수집 후 Drive 업로드
@@ -17,6 +19,12 @@ main.py — 수집 전용 CLI 진입점
 
   # 실제 저장 없이 테스트
   python main.py --mode bootstrap --years-ago 1 --dry-run
+
+  # US/Crypto OHLC 2020~2025년 백필
+  python main.py --mode ohlc-backfill --market all --start-year 2020 --upload-drive
+
+  # US OHLC 증분 업데이트
+  python main.py --mode ohlc-update --market us --upload-drive
 """
 
 import argparse
@@ -196,6 +204,50 @@ def run_bootstrap(args):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ohlc-backfill 모드
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_ohlc_backfill(args):
+    """
+    US/Crypto OHLC 초기 적재.
+    --market all|us|crypto, --start-year, --end-year 옵션 사용.
+    """
+    from data import ohlc_collector
+    end_year = args.end_year or (datetime.today().year - 1)
+    markets = ["us", "crypto"] if args.market == "all" else [args.market]
+    for market in markets:
+        logger.info(f"[OhlcBackfill] {market.upper()} {args.start_year}~{end_year}년 백필 시작")
+        ohlc_collector.backfill_market(
+            market=market,
+            start_year=args.start_year,
+            end_year=end_year,
+            upload=args.upload_drive and not args.dry_run,
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ohlc-update 모드
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_ohlc_update(args):
+    """
+    US/Crypto OHLC 증분 업데이트.
+    마지막 업데이트 이후 누락된 데이터를 수집.
+    """
+    from data import ohlc_collector
+    markets = ["us", "crypto"] if args.market == "all" else [args.market]
+    for market in markets:
+        logger.info(f"[OhlcUpdate] {market.upper()} 증분 업데이트 시작")
+        if not args.dry_run:
+            ohlc_collector.update_market(
+                market=market,
+                upload=args.upload_drive,
+            )
+        else:
+            logger.info(f"[DryRun] {market.upper()} ohlc update 시뮬레이션")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Drive 업로드 헬퍼
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -229,8 +281,14 @@ def main():
     )
 
     parser.add_argument(
-        "--mode", choices=["daily", "bootstrap"], required=True,
-        help="daily: 오늘 수집 / bootstrap: 과거 연도 일괄 수집",
+        "--mode",
+        choices=["daily", "bootstrap", "ohlc-backfill", "ohlc-update"],
+        required=True,
+        help=(
+            "daily: 오늘 수집 / bootstrap: 과거 연도 일괄 수집 / "
+            "ohlc-backfill: US/Crypto OHLC 초기 적재 / "
+            "ohlc-update: US/Crypto OHLC 증분 업데이트"
+        ),
     )
 
     # bootstrap 전용
@@ -269,6 +327,20 @@ def main():
         help="체크포인트 무시 → 이미 완료된 월도 재수집",
     )
 
+    # ohlc 모드 전용
+    parser.add_argument(
+        "--market", choices=["us", "crypto", "all"], default="all",
+        help="ohlc 모드: 대상 시장 (기본: all)",
+    )
+    parser.add_argument(
+        "--start-year", type=int, default=2020,
+        help="ohlc-backfill: 수집 시작 연도 (기본: 2020)",
+    )
+    parser.add_argument(
+        "--end-year", type=int, default=None,
+        help="ohlc-backfill: 수집 종료 연도 (기본: 작년)",
+    )
+
     # Drive & 기타
     parser.add_argument(
         "--upload-drive", action="store_true",
@@ -301,6 +373,10 @@ def main():
         run_daily(args)
     elif args.mode == "bootstrap":
         run_bootstrap(args)
+    elif args.mode == "ohlc-backfill":
+        run_ohlc_backfill(args)
+    elif args.mode == "ohlc-update":
+        run_ohlc_update(args)
 
 
 if __name__ == "__main__":
