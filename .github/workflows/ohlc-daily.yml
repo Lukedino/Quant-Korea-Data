@@ -29,16 +29,11 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Setup Service Account credentials
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: |
-          echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > gdrive_creds.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
       - name: OHLC Daily Update
         env:
-          GDRIVE_FOLDER_ID:      ${{ secrets.GDRIVE_FOLDER_ID }}
-          GDRIVE_OHLC_FOLDER_ID: ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
+          GDRIVE_FOLDER_ID:            ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_OHLC_FOLDER_ID:       ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
           ARGS="--mode ohlc-update --upload-drive --market ${{ inputs.market || 'all' }}"
           ${{ inputs.dry_run || 'false' }} && ARGS="$ARGS --dry-run"
@@ -52,4 +47,4 @@ jobs:
           retention-days: 7
       - name: Cleanup credentials
         if: always()
-        run: rm -f gdrive_creds.json data/oauth_token.json
+        run: rm -f gdrive_creds.json

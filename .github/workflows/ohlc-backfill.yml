@@ -34,16 +34,11 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Setup Service Account credentials
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: |
-          echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > gdrive_creds.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
       - name: OHLC Backfill
         env:
-          GDRIVE_FOLDER_ID:      ${{ secrets.GDRIVE_FOLDER_ID }}
-          GDRIVE_OHLC_FOLDER_ID: ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
+          GDRIVE_FOLDER_ID:            ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_OHLC_FOLDER_ID:       ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
           ARGS="--mode ohlc-backfill --upload-drive --market ${{ inputs.market }} --start-year ${{ inputs.start_year }}"
           [ -n "${{ inputs.end_year }}" ] && ARGS="$ARGS --end-year ${{ inputs.end_year }}"
@@ -57,4 +52,4 @@ jobs:
           path: collection.log
       - name: Cleanup credentials
         if: always()
-        run: rm -f gdrive_creds.json data/oauth_token.json
+        run: rm -f gdrive_creds.json

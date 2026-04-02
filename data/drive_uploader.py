@@ -68,21 +68,31 @@ class DriveUploader:
             logger.info("[Drive] OAuth2 사용자 인증 사용")
             return self._service
 
-        # [2] Service Account (Shared Drive 전용 — 개인 My Drive에는 새 파일 생성 불가)
+        # [2] Service Account — 환경변수 우선, 없으면 파일 fallback
+        from google.oauth2 import service_account
+        import json as _json
+
+        sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        if sa_json:
+            creds = service_account.Credentials.from_service_account_info(
+                _json.loads(sa_json), scopes=SCOPES
+            )
+            self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
+            logger.info("[Drive] Service Account (env) 인증 사용")
+            return self._service
+
         creds_path = config.GDRIVE_CREDS_PATH
         if not Path(creds_path).exists():
             raise FileNotFoundError(
                 f"Google 자격증명 파일이 없습니다.\n"
-                f"OAuth2 설정: py -3.12 scripts/setup_oauth.py\n"
-                f"Service Account 경로: {creds_path}"
+                f"GOOGLE_SERVICE_ACCOUNT_JSON 환경변수 또는 파일: {creds_path}"
             )
 
-        from google.oauth2 import service_account
         creds = service_account.Credentials.from_service_account_file(
             creds_path, scopes=SCOPES
         )
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        logger.info("[Drive] Service Account 인증 사용")
+        logger.info("[Drive] Service Account (file) 인증 사용")
         return self._service
 
     # ── 폴더 탐색 & 생성 ───────────────────────────────────────────────────────
