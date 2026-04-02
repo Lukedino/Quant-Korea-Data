@@ -38,7 +38,7 @@ jobs:
         env:
           GDRIVE_FOLDER_ID:            ${{ secrets.GDRIVE_FOLDER_ID }}
           GDRIVE_OHLC_FOLDER_ID:       ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
         run: |
           ARGS="--mode ohlc-backfill --upload-drive --market ${{ inputs.market }} --start-year ${{ inputs.start_year }}"
           [ -n "${{ inputs.end_year }}" ] && ARGS="$ARGS --end-year ${{ inputs.end_year }}"
