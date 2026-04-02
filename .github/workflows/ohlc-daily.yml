@@ -29,13 +29,12 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Setup Google Drive token
+      - name: Setup Service Account credentials
         env:
-          GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
-          mkdir -p data
-          python -c "import base64,os; open('data/oauth_token.json','wb').write(base64.b64decode(''.join(os.environ['GDRIVE_TOKEN'].split())))"
-          echo "GDRIVE_TOKEN_PATH=data/oauth_token.json" >> $GITHUB_ENV
+          echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > gdrive_creds.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=gdrive_creds.json" >> $GITHUB_ENV
       - name: OHLC Daily Update
         env:
           GDRIVE_FOLDER_ID:      ${{ secrets.GDRIVE_FOLDER_ID }}
