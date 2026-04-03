@@ -355,7 +355,16 @@ def run_kr_backfill(args):
     from data import kr_collector, kr_db
 
     if not args.start_date or not args.end_date:
-        logger.error("[KrBackfill] --start-date, --end-date 필수")
+        logger.error("[KrBackfill] --start-date, --end-date 필수 (예: --start-date 2026-02-21)")
+        return
+
+    # 날짜 형식 사전 검증 (잘못된 값으로 실행 방지)
+    try:
+        from datetime import datetime as _dt
+        _dt.strptime(args.start_date, "%Y-%m-%d")
+        _dt.strptime(args.end_date,   "%Y-%m-%d")
+    except ValueError as e:
+        logger.error(f"[KrBackfill] 날짜 형식 오류: {e}  (YYYY-MM-DD 필요, 예: 2026-02-21)")
         return
 
     logger.info(f"[KrBackfill] 기간: {args.start_date} ~ {args.end_date}")

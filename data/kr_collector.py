@@ -120,6 +120,18 @@ def collect_backfill(start_date: str, end_date: str) -> pd.DataFrame:
     except ImportError as e:
         raise ImportError(f"필요 라이브러리 미설치: {e}")
 
+    # 날짜 유효성 검증
+    try:
+        start_dt_obj = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt_obj   = datetime.strptime(end_date,   "%Y-%m-%d")
+    except ValueError as e:
+        logger.error(f"[KrCollector] 날짜 형식 오류: {e}  (YYYY-MM-DD 형식 필요)")
+        return pd.DataFrame()
+
+    if start_dt_obj > end_dt_obj:
+        logger.error(f"[KrCollector] start_date({start_date}) > end_date({end_date}) → 종료")
+        return pd.DataFrame()
+
     # 종목 목록 확보
     universe = _build_universe(fdr)
     if universe.empty:
@@ -132,7 +144,7 @@ def collect_backfill(start_date: str, end_date: str) -> pd.DataFrame:
     )
 
     # yfinance end는 exclusive
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+    end_dt = end_dt_obj + timedelta(days=1)
     end_str = end_dt.strftime("%Y-%m-%d")
 
     all_rows = []
@@ -160,6 +172,7 @@ def collect_backfill(start_date: str, end_date: str) -> pd.DataFrame:
             continue
 
         if raw is None or raw.empty:
+            logger.debug(f"[KrCollector] 배치 {batch_no} 빈 응답 (전체 상장폐지 또는 해당 기간 데이터 없음)")
             continue
 
         for yf_t in batch_yf:
@@ -203,7 +216,9 @@ def collect_backfill(start_date: str, end_date: str) -> pd.DataFrame:
                 all_rows.append(_normalize_schema(df_t))
 
             except Exception as e:
-                logger.debug(f"[KrCollector] {yf_t} 처리 실패: {e}")
+                # yfinance가 Yahoo Finance로부터 유효하지 않은 날짜(예: 2026-00-01)를
+                # 받아오는 경우 ValueError 발생 → 상장폐지/데이터 없음으로 간주하고 스킵
+                logger.debug(f"[KrCollector] {yf_t} 스킵: {type(e).__name__}: {e}")
 
         time.sleep(1.0)
 
