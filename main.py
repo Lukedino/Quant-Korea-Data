@@ -270,31 +270,74 @@ def run_ohlc_update(args):
 
 def run_kr_daily(args):
     """
-    FDR StockListing으로 오늘 KR 전종목 스냅샷 수집 후 Drive 업로드.
-    장 마감(15:30 KST) 이후 실행 권장.
+    KR daily 수집 플로우:
+    1. Drive에서 현재 연도 parquet + status 다운로드
+    2. last_date 확인 → 어제까지 갭이 있으면 yfinance backfill 자동 수행
+    3. 오늘 FDR StockListing 스냅샷 수집
+    4. 저장 + Drive 업로드
     """
+    from datetime import date, timedelta
     from data import kr_collector, kr_db
+    import pandas as pd
 
     if args.dry_run:
         logger.info("[KrDaily] dry-run: 수집 시뮬레이션 (저장 없음)")
         return
 
+    today = date.today()
+    current_year = today.year
+
+    # 1. Drive에서 현재 연도 parquet 다운로드 (로컬에 없을 때)
+    if not kr_db.local_path(current_year).exists():
+        logger.info(f"[KrDaily] marcap-{current_year}.parquet 로컬 없음 → Drive 다운로드 시도")
+        kr_db.download_year(current_year)
+
+    # 2. 갭 감지 → 자동 backfill
+    last_date = kr_db.get_last_date(current_year)
+    if last_date is None:
+        # 파일 자체가 없는 경우 — 연초부터 어제까지 백필
+        gap_start = date(current_year, 1, 1)
+    else:
+        gap_start = last_date + timedelta(days=1)
+
+    yesterday = today - timedelta(days=1)
+
+    if gap_start <= yesterday:
+        # 주말만 있는 구간인지 확인 (평일이 없으면 스킵)
+        bdays = pd.bdate_range(str(gap_start), str(yesterday))
+        if len(bdays) > 0:
+            logger.info(
+                f"[KrDaily] 갭 감지: {gap_start} ~ {yesterday} "
+                f"({len(bdays)} 영업일) → yfinance backfill 시작"
+            )
+            gap_df = kr_collector.collect_backfill(str(gap_start), str(yesterday))
+            if not gap_df.empty:
+                gap_updated = kr_db.append_rows(gap_df)
+                logger.info(f"[KrDaily] 갭 보완 완료: {gap_updated}년 파일 업데이트")
+            else:
+                logger.warning("[KrDaily] 갭 backfill 수집 결과 없음")
+        else:
+            logger.info(f"[KrDaily] 갭 없음 (주말만 존재: {gap_start} ~ {yesterday})")
+    else:
+        logger.info(f"[KrDaily] 갭 없음 — last_date: {last_date}")
+
+    # 3. 오늘 FDR 스냅샷 수집
+    logger.info("[KrDaily] 오늘 스냅샷 수집 (FDR StockListing)")
     df = kr_collector.collect_daily()
     if df.empty:
-        logger.error("[KrDaily] 수집 실패 → 종료")
+        logger.error("[KrDaily] 오늘 수집 실패 → 종료")
         return
 
-    today = df["Date"].iloc[0]
-    year = int(str(today)[:4])
-
+    # 4. 저장
     updated = kr_db.append_rows(df)
-    logger.info(f"[KrDaily] 저장 완료: {year}년 파일 업데이트")
 
-    last_date = df["Date"].max()
-    status = kr_db.load_status()
-    total_days = status.get("trading_days_total", 0) + 1
-    kr_db.save_status(last_date.date() if hasattr(last_date, "date") else last_date, total_days)
+    last_saved = df["Date"].max()
+    last_saved_date = last_saved.date() if hasattr(last_saved, "date") else last_saved
+    existing = kr_db.load_status()
+    total_days = existing.get("trading_days_total", 0) + 1
+    kr_db.save_status(last_saved_date, total_days)
 
+    # 5. Drive 업로드
     if args.upload_drive and updated:
         kr_db.upload_years(updated)
         logger.info(f"[KrDaily] Drive 업로드 완료: {updated}")
