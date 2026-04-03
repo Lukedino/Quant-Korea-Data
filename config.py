@@ -33,6 +33,7 @@ DRIVE_PATHS = {
     # ── OHLC DB (루트: GDRIVE_OHLC_FOLDER_ID = [Database] Market Crawling Data) ──
     "ohlc_us":       "us",            # US 주식/ETF OHLC (연도별 parquet)
     "ohlc_crypto":   "crypto",        # 크립토 OHLC (연도별 parquet)
+    "ohlc_kr":       "kr",            # KR 시장 OHLC+시총 (연도별 parquet, 구 marcap 폴더)
     "ohlc_meta":     "_meta",         # DB 상태 메타 (db_status.json)
     "us_financials": "us/financials", # US 분기 재무제표
     "us_ratios":     "us/ratios",     # US 재무비율 스냅샷

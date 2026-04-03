@@ -1,0 +1,46 @@
+name: "KR Backfill — 한국 시장 누락 구간 수집"
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '수집 시작일 (YYYY-MM-DD)'
+        required: true
+        default: '2026-02-21'
+      end_date:
+        description: '수집 종료일 (YYYY-MM-DD)'
+        required: true
+        default: '2026-04-03'
+      dry_run:
+        description: '테스트 실행 (저장 없음)'
+        type: boolean
+        default: false
+
+jobs:
+  kr-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: KR Backfill
+        env:
+          GDRIVE_OHLC_FOLDER_ID:       ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+        run: |
+          ARGS="--mode kr-backfill --upload-drive --start-date ${{ inputs.start_date }} --end-date ${{ inputs.end_date }}"
+          ${{ inputs.dry_run || 'false' }} && ARGS="$ARGS --dry-run"
+          python main.py $ARGS
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-backfill-log-${{ github.run_id }}
+          path: collection.log
+          retention-days: 14

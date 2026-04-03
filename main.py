@@ -32,6 +32,12 @@ main.py — 수집 전용 CLI 진입점
 
   # Crypto 재무 데이터만 dry-run 테스트
   python main.py --mode financials-update --market crypto --dry-run
+
+  # KR 오늘 데이터 수집 (FDR StockListing)
+  python main.py --mode kr-daily --upload-drive
+
+  # KR 과거 누락 구간 backfill (yfinance)
+  python main.py --mode kr-backfill --start-date 2026-02-21 --end-date 2026-04-03 --upload-drive
 """
 
 import argparse
@@ -258,6 +264,80 @@ def run_ohlc_update(args):
 # financials-update 모드
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# kr-daily 모드
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_kr_daily(args):
+    """
+    FDR StockListing으로 오늘 KR 전종목 스냅샷 수집 후 Drive 업로드.
+    장 마감(15:30 KST) 이후 실행 권장.
+    """
+    from data import kr_collector, kr_db
+
+    if args.dry_run:
+        logger.info("[KrDaily] dry-run: 수집 시뮬레이션 (저장 없음)")
+        return
+
+    df = kr_collector.collect_daily()
+    if df.empty:
+        logger.error("[KrDaily] 수집 실패 → 종료")
+        return
+
+    today = df["Date"].iloc[0]
+    year = int(str(today)[:4])
+
+    updated = kr_db.append_rows(df)
+    logger.info(f"[KrDaily] 저장 완료: {year}년 파일 업데이트")
+
+    last_date = df["Date"].max()
+    status = kr_db.load_status()
+    total_days = status.get("trading_days_total", 0) + 1
+    kr_db.save_status(last_date.date() if hasattr(last_date, "date") else last_date, total_days)
+
+    if args.upload_drive and updated:
+        kr_db.upload_years(updated)
+        logger.info(f"[KrDaily] Drive 업로드 완료: {updated}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# kr-backfill 모드
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_kr_backfill(args):
+    """
+    yfinance로 과거 누락 구간 KR OHLCV 백필.
+    --start-date / --end-date 로 기간 지정.
+    """
+    from data import kr_collector, kr_db
+
+    if not args.start_date or not args.end_date:
+        logger.error("[KrBackfill] --start-date, --end-date 필수")
+        return
+
+    logger.info(f"[KrBackfill] 기간: {args.start_date} ~ {args.end_date}")
+
+    if args.dry_run:
+        logger.info("[KrBackfill] dry-run: 수집 시뮬레이션 (저장 없음)")
+        return
+
+    df = kr_collector.collect_backfill(args.start_date, args.end_date)
+    if df.empty:
+        logger.error("[KrBackfill] 수집 실패 → 종료")
+        return
+
+    updated = kr_db.append_rows(df)
+
+    last_date = df["Date"].max()
+    status = kr_db.load_status()
+    total_days = status.get("trading_days_total", 0)
+    kr_db.save_status(last_date.date() if hasattr(last_date, "date") else last_date, total_days)
+
+    if args.upload_drive and updated:
+        kr_db.upload_years(updated)
+        logger.info(f"[KrBackfill] Drive 업로드 완료: {updated}")
+
+
 def run_financials_update(args):
     """
     US financials + ratios, Crypto ratios 수집 및 Drive 업로드.
@@ -315,13 +395,16 @@ def main():
 
     parser.add_argument(
         "--mode",
-        choices=["daily", "bootstrap", "ohlc-backfill", "ohlc-update", "financials-update"],
+        choices=["daily", "bootstrap", "ohlc-backfill", "ohlc-update", "financials-update",
+                 "kr-daily", "kr-backfill"],
         required=True,
         help=(
             "daily: 오늘 수집 / bootstrap: 과거 연도 일괄 수집 / "
             "ohlc-backfill: US/Crypto OHLC 초기 적재 / "
             "ohlc-update: US/Crypto OHLC 증분 업데이트 / "
-            "financials-update: US 재무제표 + Crypto 시장 데이터 수집"
+            "financials-update: US 재무제표 + Crypto 시장 데이터 수집 / "
+            "kr-daily: KR 오늘 스냅샷 수집 (FDR) / "
+            "kr-backfill: KR 과거 누락 구간 수집 (yfinance)"
         ),
     )
 
@@ -375,6 +458,16 @@ def main():
         help="ohlc-backfill: 수집 종료 연도 (기본: 작년)",
     )
 
+    # kr-backfill 전용
+    parser.add_argument(
+        "--start-date", type=str, metavar="YYYY-MM-DD",
+        help="kr-backfill: 수집 시작일",
+    )
+    parser.add_argument(
+        "--end-date", type=str, metavar="YYYY-MM-DD",
+        help="kr-backfill: 수집 종료일",
+    )
+
     # Drive & 기타
     parser.add_argument(
         "--upload-drive", action="store_true",
@@ -413,6 +506,10 @@ def main():
         run_ohlc_update(args)
     elif args.mode == "financials-update":
         run_financials_update(args)
+    elif args.mode == "kr-daily":
+        run_kr_daily(args)
+    elif args.mode == "kr-backfill":
+        run_kr_backfill(args)
 
 
 if __name__ == "__main__":

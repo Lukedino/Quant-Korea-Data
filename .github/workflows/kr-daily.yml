@@ -1,0 +1,41 @@
+name: "KR Daily — 한국 시장 일별 스냅샷"
+
+on:
+  schedule:
+    # 매일 07:30 UTC (16:30 KST) — 장마감(15:30) 후 1시간
+    - cron: '30 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '테스트 실행 (저장 없음)'
+        type: boolean
+        default: false
+
+jobs:
+  kr-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: KR Daily Snapshot
+        env:
+          GDRIVE_OHLC_FOLDER_ID:       ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+        run: |
+          ARGS="--mode kr-daily --upload-drive"
+          ${{ inputs.dry_run || 'false' }} && ARGS="$ARGS --dry-run"
+          python main.py $ARGS
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-daily-log-${{ github.run_id }}
+          path: collection.log
+          retention-days: 7
