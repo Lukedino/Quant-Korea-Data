@@ -332,6 +332,84 @@ def upload_status(uploader=None):
         logger.error(f"[OhlcDB] db_status.json 업로드 실패: {e}")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 종목 메타데이터 (sector_meta) 저장 / Drive 연동
+# ══════════════════════════════════════════════════════════════════════════════
+
+def sector_meta_path(market: str) -> Path:
+    """sector_meta parquet 로컬 경로."""
+    return local_dir(market) / f"{market}_sector_meta.parquet"
+
+
+def save_sector_meta(df: pd.DataFrame, market: str):
+    """sector_meta parquet 저장 (덮어쓰기)."""
+    if df.empty:
+        logger.warning(f"[OhlcDB] sector_meta 빈 DataFrame → 저장 건너뜀: {market}")
+        return
+    path = sector_meta_path(market)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pandas(df, preserve_index=False)
+    pq.write_table(table, str(path), compression="snappy")
+    size_kb = path.stat().st_size / 1024
+    logger.info(f"[OhlcDB] sector_meta 저장: {path.name} ({len(df)}종목, {size_kb:.1f}KB)")
+
+
+def load_sector_meta(market: str) -> pd.DataFrame:
+    """sector_meta parquet 로드. 파일 없으면 빈 DataFrame 반환."""
+    path = sector_meta_path(market)
+    if not path.exists():
+        return pd.DataFrame(columns=["Ticker", "Market", "Sector", "Industry", "updated_at"])
+    try:
+        return pq.read_table(str(path)).to_pandas()
+    except Exception as e:
+        logger.error(f"[OhlcDB] sector_meta 로드 실패: {e}")
+        return pd.DataFrame(columns=["Ticker", "Market", "Sector", "Industry", "updated_at"])
+
+
+def upload_sector_meta(market: str, uploader=None):
+    """sector_meta parquet를 Drive에 업로드."""
+    u = _get_uploader(uploader)
+    if u is None:
+        return
+    remote_path = config.DRIVE_PATHS.get(f"ohlc_{market}")
+    if not remote_path:
+        logger.error(f"[OhlcDB] DRIVE_PATHS에 'ohlc_{market}' 없음")
+        return
+    path = sector_meta_path(market)
+    if not path.exists():
+        logger.warning(f"[OhlcDB] sector_meta 없음: {path.name}")
+        return
+    try:
+        u.upload(str(path), remote_path)
+        logger.info(f"[OhlcDB] sector_meta 업로드 완료: {path.name} → {remote_path}/")
+    except Exception as e:
+        logger.error(f"[OhlcDB] sector_meta 업로드 실패: {e}")
+
+
+def download_sector_meta(market: str, uploader=None) -> bool:
+    """Drive에서 sector_meta parquet 다운로드. 성공 True, 실패 False."""
+    u = _get_uploader(uploader)
+    if u is None:
+        return False
+    remote_path = config.DRIVE_PATHS.get(f"ohlc_{market}")
+    if not remote_path:
+        logger.error(f"[OhlcDB] DRIVE_PATHS에 'ohlc_{market}' 없음")
+        return False
+    filename = f"{market}_sector_meta.parquet"
+    dest = sector_meta_path(market)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        u.download(remote_path, filename, str(dest))
+        logger.info(f"[OhlcDB] sector_meta 다운로드 완료: {filename}")
+        return True
+    except FileNotFoundError:
+        logger.debug(f"[OhlcDB] Drive에 없음: {remote_path}/{filename}")
+        return False
+    except Exception as e:
+        logger.error(f"[OhlcDB] sector_meta 다운로드 실패: {e}")
+        return False
+
+
 def download_all_years(market: str, uploader=None):
     """
     Drive 해당 시장 폴더의 모든 연도 파일을 로컬에 다운로드.

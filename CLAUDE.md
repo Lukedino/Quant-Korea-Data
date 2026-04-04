@@ -24,9 +24,11 @@ US 주식/ETF, 크립토, KR(한국) 시장 OHLC + 재무데이터를 수집해 
     │   ├─ marcap-2026.parquet
     │   └─ marcap-2027~2030.parquet  (빈 플레이스홀더, 수동 업로드)
     ├─ us/          ← US 주식/ETF OHLC (연도별 parquet)
-    │   └─ us_YYYY.parquet
+    │   ├─ us_YYYY.parquet
+    │   └─ us_sector_meta.parquet   ← 종목 메타 (Sector/Industry/Market, 주 1회 갱신)
     ├─ crypto/      ← 크립토 OHLC (연도별 parquet)
-    │   └─ crypto_YYYY.parquet
+    │   ├─ crypto_YYYY.parquet
+    │   └─ crypto_sector_meta.parquet  ← 종목 메타 (Market="Crypto", 주 1회 갱신)
     └─ _meta/       ← DB 상태 메타 (db_status.json)
 ```
 
@@ -49,11 +51,12 @@ US 주식/ETF, 크립토, KR(한국) 시장 OHLC + 재무데이터를 수집해 
 
 | 파일 | 스케줄 | 역할 |
 |------|--------|------|
-| `kr-daily.yml` | 평일 07:30 UTC (16:30 KST) | KR 일별 스냅샷 수집 + 자동 갭 보정 |
+| `kr-daily.yml` | 평일 UTC 07:30 (KST 16:30) | KR 일별 스냅샷 수집 + 자동 갭 보정 |
 | `kr-backfill.yml` | workflow_dispatch | KR 누락 구간 과거 수집 |
-| `ohlc-daily.yml` | 자동 | US/Crypto OHLC 일별 수집 |
+| `ohlc-daily.yml` | 월~토 UTC 22:00 (KST 07:00) | US/Crypto OHLC 일별 수집 |
 | `ohlc-backfill.yml` | workflow_dispatch | US/Crypto OHLC 과거 수집 |
 | `financials-update.yml` | 자동 | US 재무데이터 수집 |
+| `sector-meta.yml` | 매주 일요일 UTC 01:00 (KST 10:00) | US/Crypto Sector/Industry/Market 태그 수집 |
 
 ---
 
@@ -98,8 +101,16 @@ Market | MarketId | Rank | Date
 
 ### US / Crypto OHLC
 
-- `data/ohlc_collector.py` — yfinance 기반 수집
-- `data/ohlc_db.py` — 연도별 Parquet 관리
+- `data/ohlc_collector.py` — yfinance 기반 수집 + `collect_sector_meta()` (주 1회 메타 수집)
+- `data/ohlc_db.py` — 연도별 Parquet 관리 + sector_meta 저장/업로드/다운로드
+
+**OHLC 스키마:** `Ticker | Date | Open | High | Low | Close | Volume | Amount | ChangesRatio | MarketCap | Dividends | Splits`
+
+**Sector Meta 스키마:** `Ticker | Market | Sector | Industry | updated_at`
+- `Market`: ETF / DOW30 / S&P500 / NASDAQ100 / US / Crypto (우선순위 순)
+- `Sector` / `Industry`: Yahoo Finance `.info` 기반 (US만, Crypto는 빈 값)
+- 로컬 경로: `data/local/ohlc_db/{market}/{market}_sector_meta.parquet`
+- 수집 주기: 매주 일요일 (sector-meta.yml)
 
 ---
 
@@ -131,9 +142,13 @@ python scripts/verify_kr.py --drive --fix
 
 ## 로컬 파일 경로
 
-- KR parquet: `data/local/ohlc_db/kr/marcap-YYYY.parquet`
-- US parquet: `data/local/ohlc_db/us/us_YYYY.parquet`
-- Crypto parquet: `data/local/ohlc_db/crypto/crypto_YYYY.parquet`
+| 경로 | 내용 | 갱신 주기 |
+|------|------|---------|
+| `data/local/ohlc_db/kr/marcap-YYYY.parquet` | KR OHLC + 시총 | 매일 |
+| `data/local/ohlc_db/us/us_YYYY.parquet` | US OHLC + MarketCap | 매일 |
+| `data/local/ohlc_db/crypto/crypto_YYYY.parquet` | Crypto OHLC + MarketCap | 매일 |
+| `data/local/ohlc_db/us/us_sector_meta.parquet` | US Sector/Industry/Market 태그 | 주 1회 (일요일) |
+| `data/local/ohlc_db/crypto/crypto_sector_meta.parquet` | Crypto Market 태그 | 주 1회 (일요일) |
 
 ---
 
@@ -146,3 +161,5 @@ python scripts/verify_kr.py --drive --fix
 | 2026-04-03 | Drive 폴더 marcap/ → kr/ 로 표준화 |
 | 2026-04-03 | verify_kr.py 추가 (누락 구간 감지 + 자동 보정) |
 | 2026-04-03 | 자동 갭 보정 로직 main.py run_kr_daily()에 추가 |
+| 2026-04-04 | sector-meta 추가: US/Crypto Sector/Industry/Market 태그 주 1회 수집 (sector-meta.yml) |
+| 2026-04-04 | ohlc_collector.collect_sector_meta(), ohlc_db.save/upload/download_sector_meta() 추가 |

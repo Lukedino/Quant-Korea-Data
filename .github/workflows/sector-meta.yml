@@ -1,0 +1,53 @@
+name: "Sector Meta — US/Crypto 종목 메타데이터 주간 수집"
+
+on:
+  schedule:
+    # 매주 일요일 UTC 01:00 (KST 10:00) — 주 트레이딩 종료 후, 월요일 장 전
+    - cron: '0 1 * * 0'
+  workflow_dispatch:
+    inputs:
+      market:
+        description: '대상 시장'
+        type: choice
+        options: [all, us, crypto]
+        default: all
+      dry_run:
+        description: '테스트 실행 (저장 없음)'
+        type: boolean
+        default: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60   # US 600종목 .info 호출 여유 시간
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Collect Sector Meta
+        env:
+          GDRIVE_OHLC_FOLDER_ID:       ${{ secrets.GDRIVE_OHLC_FOLDER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+        run: |
+          ARGS="--mode sector-meta --upload-drive --market ${{ inputs.market || 'all' }}"
+          ${{ inputs.dry_run == 'true' && 'true' || 'false' }} && ARGS="$ARGS --dry-run"
+          python main.py $ARGS
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sector-meta-log-${{ github.run_id }}
+          path: collection.log
+          retention-days: 7
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f gdrive_creds.json

@@ -38,6 +38,9 @@ main.py — 수집 전용 CLI 진입점
 
   # KR 과거 누락 구간 backfill (yfinance)
   python main.py --mode kr-backfill --start-date 2026-02-21 --end-date 2026-04-03 --upload-drive
+
+  # US/Crypto 종목 메타데이터 수집 (Sector/Industry/Market 태그, 주 1회)
+  python main.py --mode sector-meta --market all --upload-drive
 """
 
 import argparse
@@ -390,6 +393,34 @@ def run_kr_backfill(args):
         logger.info(f"[KrBackfill] Drive 업로드 완료: {updated}")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# sector-meta 모드
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_sector_meta(args):
+    """
+    US/Crypto 종목 메타데이터 수집 (주 1회 실행).
+    - US: 유니버스 전체 → Market 태그 + Yahoo .info Sector/Industry
+    - Crypto: 유니버스 전체 → Market="Crypto", Sector/Industry=""
+    결과: {market}_sector_meta.parquet → Drive ohlc_{market} 폴더에 업로드
+    """
+    from data import ohlc_collector, ohlc_db
+    markets = ["us", "crypto"] if args.market == "all" else [args.market]
+    for market in markets:
+        logger.info(f"[SectorMeta] {market.upper()} 메타데이터 수집 시작")
+        if args.dry_run:
+            logger.info(f"[DryRun] {market} sector-meta 시뮬레이션")
+            continue
+        df = ohlc_collector.collect_sector_meta(market)
+        if not df.empty:
+            ohlc_db.save_sector_meta(df, market)
+            if args.upload_drive:
+                ohlc_db.upload_sector_meta(market)
+            logger.info(f"[SectorMeta] {market.upper()} 완료: {len(df)}종목")
+        else:
+            logger.warning(f"[SectorMeta] {market.upper()} 결과 없음")
+
+
 def run_financials_update(args):
     """
     US financials + ratios, Crypto ratios 수집 및 Drive 업로드.
@@ -448,7 +479,7 @@ def main():
     parser.add_argument(
         "--mode",
         choices=["daily", "bootstrap", "ohlc-backfill", "ohlc-update", "financials-update",
-                 "kr-daily", "kr-backfill"],
+                 "kr-daily", "kr-backfill", "sector-meta"],
         required=True,
         help=(
             "daily: 오늘 수집 / bootstrap: 과거 연도 일괄 수집 / "
@@ -456,7 +487,8 @@ def main():
             "ohlc-update: US/Crypto OHLC 증분 업데이트 / "
             "financials-update: US 재무제표 + Crypto 시장 데이터 수집 / "
             "kr-daily: KR 오늘 스냅샷 수집 (FDR) / "
-            "kr-backfill: KR 과거 누락 구간 수집 (yfinance)"
+            "kr-backfill: KR 과거 누락 구간 수집 (yfinance) / "
+            "sector-meta: US/Crypto 종목 메타데이터 수집 (Sector/Industry, 주 1회)"
         ),
     )
 
@@ -562,6 +594,8 @@ def main():
         run_kr_daily(args)
     elif args.mode == "kr-backfill":
         run_kr_backfill(args)
+    elif args.mode == "sector-meta":
+        run_sector_meta(args)
 
 
 if __name__ == "__main__":

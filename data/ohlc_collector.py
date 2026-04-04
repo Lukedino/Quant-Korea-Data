@@ -7,8 +7,11 @@ data/ohlc_collector.py — US 주식/ETF 및 크립토 OHLC 수집 (yfinance)
   - Crypto: CoinMarketCap Top 200 (동적 크롤링)
             → input/crypto_universe.txt 파일 있으면 해당 파일 우선 사용
 
-출력 스키마: Ticker | Date | Open | High | Low | Close | Volume |
-            Amount | ChangesRatio | MarketCap | Dividends | Splits
+출력 스키마 (OHLC):   Ticker | Date | Open | High | Low | Close | Volume |
+                     Amount | ChangesRatio | MarketCap | Dividends | Splits
+출력 스키마 (메타):   Ticker | Market | Sector | Industry | updated_at
+  - Market: S&P500 / NASDAQ100 / DOW30 / ETF / US / Crypto
+  - Sector/Industry: Yahoo Finance .info 기반 (주 1회 수집)
 """
 
 import logging
@@ -55,6 +58,14 @@ _MANUAL_CRYPTO = [
 
 _BATCH_SIZE = 50   # yfinance rate limit 방지
 _CMC_TOP_N  = 200  # CoinMarketCap 상위 N개
+
+# ── ETF 판별 세트 (Market 태그용) ─────────────────────────────────────────────
+_ETF_SET = {
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "ARKK",
+    "XLF", "XLE", "XLK", "XLV", "XLI", "XLC", "XLRE", "XLU", "XLP", "XLB", "XLY",
+    "GLD", "SLV", "TLT", "HYG", "LQD", "EEM", "EFA", "VWO", "IEMG", "VEA",
+    "SOXX", "SMH", "KWEB", "MCHI", "FXI", "TQQQ", "SOXL", "GRNY",
+}
 
 # ── HTTP 세션 ─────────────────────────────────────────────────────────────────
 _SESSION = requests.Session()
@@ -714,4 +725,90 @@ def _enrich_crypto_marketcap(df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"[OhlcCollector] CMC MarketCap 수집 실패: {e}")
 
+    return df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 종목 메타데이터 수집 (주 1회 — Sector / Industry / Market 태그)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def collect_sector_meta(market: str) -> pd.DataFrame:
+    """
+    US/Crypto 종목 메타데이터 수집 (주 1회 실행 권장).
+
+    US:
+      - 유니버스 전체 조회 → Market 태그 부여 (ETF / DOW30 / S&P500 / NASDAQ100 / US)
+      - yf.Ticker(t).info 로 Sector / Industry 수집 (종목당 0.15초 sleep)
+
+    Crypto:
+      - 유니버스 전체 → Market="Crypto", Sector/Industry 빈 값
+
+    Returns:
+      DataFrame: Ticker | Market | Sector | Industry | updated_at
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        raise ImportError("yfinance를 설치하세요: pip install yfinance")
+
+    from datetime import datetime as _dt
+    updated_at = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+
+    # ── Crypto ────────────────────────────────────────────────────────────────
+    if market == "crypto":
+        tickers = load_tickers("crypto")
+        rows = [
+            {"Ticker": t, "Market": "Crypto", "Sector": "", "Industry": "", "updated_at": updated_at}
+            for t in tickers
+        ]
+        df = pd.DataFrame(rows)
+        logger.info(f"[SectorMeta] Crypto 메타 완료: {len(df)}종목")
+        return df
+
+    # ── US ────────────────────────────────────────────────────────────────────
+    # 유니버스별 세트 구성 (Market 태그 우선순위: ETF > DOW30 > S&P500 > NASDAQ100 > US)
+    sp500  = set(_fetch_sp500())
+    nasdaq = set(_fetch_nasdaq100())
+    dow30  = set(_fetch_dow30())
+    all_tickers = load_tickers("us")
+
+    def _tag_market(t: str) -> str:
+        if t in _ETF_SET:  return "ETF"
+        if t in dow30:     return "DOW30"
+        if t in sp500:     return "S&P500"
+        if t in nasdaq:    return "NASDAQ100"
+        return "US"
+
+    try:
+        from tqdm import tqdm
+        ticker_iter = tqdm(all_tickers, desc="SectorMeta(US)", unit="ticker")
+    except ImportError:
+        ticker_iter = all_tickers
+
+    rows = []
+    logger.info(f"[SectorMeta] US Sector/Industry 수집 시작: {len(all_tickers)}종목")
+
+    for i, t in enumerate(ticker_iter, 1):
+        sector, industry = "", ""
+        try:
+            info = yf.Ticker(t).info
+            sector   = info.get("sector",   "") or ""
+            industry = info.get("industry", "") or ""
+        except Exception as e:
+            logger.debug(f"[SectorMeta] {t} .info 실패: {e}")
+
+        rows.append({
+            "Ticker":     t,
+            "Market":     _tag_market(t),
+            "Sector":     sector,
+            "Industry":   industry,
+            "updated_at": updated_at,
+        })
+
+        if i % 100 == 0:
+            logger.info(f"[SectorMeta] 진행: {i}/{len(all_tickers)}")
+        time.sleep(0.15)
+
+    df = pd.DataFrame(rows)
+    logger.info(f"[SectorMeta] US 메타 완료: {len(df)}종목")
     return df
