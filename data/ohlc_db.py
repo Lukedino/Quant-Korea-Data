@@ -27,7 +27,10 @@ _LOCAL_ROOT = Path(config.LOCAL_DATA_DIR) / "ohlc_db"
 _STATUS_PATH = _LOCAL_ROOT / "db_status.json"
 
 # Parquet 컬럼 순서 (스키마 고정)
-_SCHEMA_COLS = ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume"]
+_SCHEMA_COLS = [
+    "Ticker", "Date", "Open", "High", "Low", "Close", "Volume",
+    "Amount", "ChangesRatio", "MarketCap", "Dividends", "Splits",
+]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
