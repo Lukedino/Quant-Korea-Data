@@ -552,7 +552,7 @@ def update_market(
 
     # 3. 수집 범위
     start_date = last_date + timedelta(days=1)
-    end_date   = date.today()
+    end_date   = date.today() + timedelta(days=1)  # yfinance end는 exclusive이므로 +1
 
     # 4. 이미 최신이면 종료
     if start_date >= end_date:
